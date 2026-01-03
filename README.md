@@ -1,8 +1,6 @@
 # GamepadCommander
 
-Gamepad-first, two-pane file manager inspired by Total Commander. Uses SDL2 for controller input and rendering, matching the core controller/UI stack used by the emulationstation-de-mod project.
-
-## Build
+Gamepad-first, two-pane file manager inspired by Total Commander.
 
 ```bash
 cmake -S . -B build
@@ -47,7 +45,3 @@ Rename modal:
 - Settings: Configure FTP host/port/user/password, UI scale, and show hidden files
 - Connect to FTP: Switch the active pane to the configured FTP site
 - Quit: Exit with confirmation
-
-## FTP
-
-- File and directory copy/move between FTP and local panes, plus delete/rename on FTP, require libcurl at build time.

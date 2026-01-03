@@ -1,0 +1,3 @@
+/home/claudio/Coding/GamepadCommander/build/CMakeFiles/GamepadCommander.dir
+/home/claudio/Coding/GamepadCommander/build/CMakeFiles/edit_cache.dir
+/home/claudio/Coding/GamepadCommander/build/CMakeFiles/rebuild_cache.dir

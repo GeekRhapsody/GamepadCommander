@@ -319,6 +319,33 @@ static std::string toLower(const std::string& text) {
     return out;
 }
 
+static std::string urlEncodeFilePath(const std::string& text) {
+    std::ostringstream out;
+    out << std::uppercase << std::hex;
+    for (unsigned char c : text) {
+        if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~' || c == ':') {
+            out << static_cast<char>(c);
+        } else {
+            out << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(c);
+        }
+    }
+    return out.str();
+}
+
+static std::string fileUrlForPath(const fs::path& path) {
+    std::string abs = fs::absolute(path).generic_string();
+    return "file://" + urlEncodeFilePath(abs);
+}
+
+static bool openLocalFile(const fs::path& path, std::string& error) {
+    std::string url = fileUrlForPath(path);
+    if (SDL_OpenURL(url.c_str()) != 0) {
+        error = SDL_GetError();
+        return false;
+    }
+    return true;
+}
+
 static int textWidth(int scale, const std::string& text) {
     const int advance = 8 * scale + scale;
     return static_cast<int>(text.size()) * advance;
@@ -1738,6 +1765,8 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
         if (entry.isDir) {
             pane.ftpPath = ftpJoinPath(pane.ftpPath, entry.name);
             loadEntries(pane, settings, status);
+        } else if (status) {
+            setStatus(*status, "Open not supported on FTP");
         }
         return;
     }
@@ -1750,6 +1779,15 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
     if (entry.isDir) {
         pane.cwd = entry.path;
         loadEntries(pane, settings, status);
+        return;
+    }
+    if (status) {
+        std::string error;
+        if (openLocalFile(entry.path, error)) {
+            setStatus(*status, "Opened");
+        } else {
+            setStatus(*status, "Open failed: " + error);
+        }
     }
 }
 

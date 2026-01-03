@@ -39,14 +39,6 @@ cmake --build build --target appimage
 - L1 / R1: Switch active pane
 - Select: Open app menu (Settings, Connect to FTP, Quit)
 - Start: Confirm rename
-- Y: Clear rename buffer
-
-Rename modal:
-- Use OSK/keyboard for text input
-- X: Backspace
-- Y: Clear rename buffer
-- Start: Confirm rename
-- B: Cancel
 
 ## Controls (Keyboard)
 
@@ -56,7 +48,6 @@ Rename modal:
 - Tab: Switch active pane
 - X: Open actions menu on a file
 - Esc: Open app menu / close modals
-- Typing: Rename input
 
 ## App Menu
 

@@ -219,6 +219,29 @@ enum class SettingField {
     FtpPass
 };
 
+enum class OskAction {
+    None,
+    Backspace,
+    Clear,
+    Ok,
+    Cancel,
+    ToggleShift,
+    ToggleSymbols
+};
+
+struct OskKey {
+    std::string label;
+    std::string value;
+    OskAction action = OskAction::None;
+};
+
+struct OskState {
+    int row = 0;
+    int col = 0;
+    bool uppercase = false;
+    bool symbols = false;
+};
+
 struct TransferState {
     bool active = false;
     std::string title;
@@ -294,6 +317,139 @@ static std::string toLower(const std::string& text) {
         return static_cast<char>(std::tolower(c));
     });
     return out;
+}
+
+static int textWidth(int scale, const std::string& text) {
+    const int advance = 8 * scale + scale;
+    return static_cast<int>(text.size()) * advance;
+}
+
+static void appendFiltered(std::string& buffer, const std::string& input, bool digitsOnly) {
+    for (char ch : input) {
+        if (digitsOnly && !std::isdigit(static_cast<unsigned char>(ch))) {
+            continue;
+        }
+        buffer.push_back(ch);
+    }
+}
+
+static OskKey makeActionKey(const std::string& label, OskAction action) {
+    return {label, "", action};
+}
+
+static std::vector<OskKey> makeCharRow(const std::string& chars) {
+    std::vector<OskKey> row;
+    row.reserve(chars.size());
+    for (char ch : chars) {
+        std::string value(1, ch);
+        row.push_back({value, value, OskAction::None});
+    }
+    return row;
+}
+
+static std::vector<std::vector<OskKey>> buildOskLayout(bool uppercase, bool symbols, bool numeric) {
+    std::vector<std::vector<OskKey>> rows;
+    if (numeric) {
+        rows.push_back(makeCharRow("123"));
+        rows.push_back(makeCharRow("456"));
+        rows.push_back(makeCharRow("789"));
+        rows.push_back(makeCharRow("0"));
+        rows.push_back({makeActionKey("BACK", OskAction::Backspace),
+                        makeActionKey("CLEAR", OskAction::Clear),
+                        makeActionKey("OK", OskAction::Ok)});
+        rows.push_back({makeActionKey("CANCEL", OskAction::Cancel)});
+        return rows;
+    }
+
+    if (symbols) {
+        rows.push_back(makeCharRow("!@#$%^&*()"));
+        rows.push_back(makeCharRow("-_=+[]{}\\|"));
+        rows.push_back(makeCharRow(";:'\",./?"));
+        rows.push_back(makeCharRow("<>`~"));
+    } else {
+        rows.push_back(makeCharRow("1234567890"));
+        std::string row2 = "QWERTYUIOP";
+        std::string row3 = "ASDFGHJKL";
+        std::string row4 = "ZXCVBNM";
+        if (!uppercase) {
+            row2 = toLower(row2);
+            row3 = toLower(row3);
+            row4 = toLower(row4);
+        }
+        rows.push_back(makeCharRow(row2));
+        rows.push_back(makeCharRow(row3));
+        rows.push_back(makeCharRow(row4));
+    }
+
+    std::string shiftLabel = uppercase ? "LOWER" : "SHIFT";
+    std::string symLabel = symbols ? "ABC" : "SYM";
+    rows.push_back({makeActionKey(shiftLabel, OskAction::ToggleShift),
+                    makeActionKey(symLabel, OskAction::ToggleSymbols),
+                    {"SPACE", " ", OskAction::None},
+                    makeActionKey("BACK", OskAction::Backspace),
+                    makeActionKey("OK", OskAction::Ok)});
+    rows.push_back({makeActionKey("CLEAR", OskAction::Clear),
+                    makeActionKey("CANCEL", OskAction::Cancel)});
+    return rows;
+}
+
+static void clampOskSelection(OskState& osk, const std::vector<std::vector<OskKey>>& layout) {
+    if (layout.empty()) {
+        osk.row = 0;
+        osk.col = 0;
+        return;
+    }
+    osk.row = std::clamp(osk.row, 0, static_cast<int>(layout.size()) - 1);
+    int cols = static_cast<int>(layout[osk.row].size());
+    if (cols <= 0) {
+        osk.col = 0;
+        return;
+    }
+    osk.col = std::clamp(osk.col, 0, cols - 1);
+}
+
+static void drawOsk(SDL_Renderer* renderer,
+                    const SDL_Rect& area,
+                    int fontScale,
+                    float uiScale,
+                    SDL_Color textColor,
+                    const std::vector<std::vector<OskKey>>& layout,
+                    const OskState& osk) {
+    const int keyHeight = std::max(1, static_cast<int>(std::round(28.0f * uiScale)));
+    const int keyGap = std::max(1, static_cast<int>(std::round(6.0f * uiScale)));
+    const SDL_Color keyBg {25, 30, 35, 255};
+    const SDL_Color keyBorder {60, 70, 80, 255};
+    const SDL_Color keyActive {40, 120, 160, 255};
+
+    int y = area.y;
+    for (size_t rowIndex = 0; rowIndex < layout.size(); ++rowIndex) {
+        const auto& row = layout[rowIndex];
+        if (row.empty()) {
+            y += keyHeight + keyGap;
+            continue;
+        }
+        int cols = static_cast<int>(row.size());
+        int keyWidth = (area.w - keyGap * (cols - 1)) / cols;
+        int rowWidth = cols * keyWidth + keyGap * (cols - 1);
+        int x = area.x + (area.w - rowWidth) / 2;
+        for (int colIndex = 0; colIndex < cols; ++colIndex) {
+            SDL_Rect keyRect {x, y, keyWidth, keyHeight};
+            bool selected = (static_cast<int>(rowIndex) == osk.row && colIndex == osk.col);
+            SDL_Color fill = selected ? keyActive : keyBg;
+            SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, fill.a);
+            SDL_RenderFillRect(renderer, &keyRect);
+            SDL_SetRenderDrawColor(renderer, keyBorder.r, keyBorder.g, keyBorder.b, keyBorder.a);
+            SDL_RenderDrawRect(renderer, &keyRect);
+
+            const std::string& label = row[static_cast<size_t>(colIndex)].label;
+            int labelWidth = textWidth(fontScale, label);
+            int labelX = keyRect.x + (keyRect.w - labelWidth) / 2;
+            int labelY = keyRect.y + (keyRect.h - 8 * fontScale) / 2;
+            drawText(renderer, labelX, labelY, fontScale, textColor, label);
+            x += keyWidth + keyGap;
+        }
+        y += keyHeight + keyGap;
+    }
 }
 
 static void drawTransferScreen(SDL_Renderer* renderer, SDL_Window* window, const Settings& settings, const TransferState& transfer) {
@@ -1438,6 +1594,7 @@ static void handleActionSelection(int menuIndex,
                                   Mode& mode,
                                   int& confirmIndex,
                                   std::string& renameBuffer,
+                                  OskState& osk,
                                   TransferContext* transferCtx) {
     if (menuIndex == 2) {
         mode = Mode::ConfirmDelete;
@@ -1446,6 +1603,7 @@ static void handleActionSelection(int menuIndex,
     }
     if (menuIndex == 3) {
         renameBuffer = action.entry.name;
+        osk = {};
         mode = Mode::Rename;
         SDL_StartTextInput();
         return;
@@ -1697,6 +1855,7 @@ int main(int argc, char** argv) {
     const std::array<std::string, 7> settingsOptions = {"FTP Host", "FTP Port", "FTP User", "FTP Password", "UI Scale", "Show Hidden", "Back"};
 
     std::string renameBuffer;
+    OskState osk;
     std::string editBuffer;
     SettingField editField = SettingField::FtpHost;
     TransferState transfer;
@@ -1704,6 +1863,47 @@ int main(int argc, char** argv) {
     bool running = true;
     TransferContext transferCtx {window, renderer, &settings, &running, &transfer};
     while (running) {
+        auto commitRename = [&]() {
+            std::string error;
+            if (!renameBuffer.empty() && renameBuffer != action.entry.name) {
+                if (renameInPane(panes[action.paneIndex], action.entry, settings, renameBuffer, error)) {
+                    setStatus(status, "Renamed");
+                    loadEntries(panes[action.paneIndex], settings, &status);
+                } else {
+                    setStatus(status, "Rename failed: " + error);
+                }
+            }
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
+        auto cancelRename = [&]() {
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
+        auto commitEdit = [&]() {
+            if (editField == SettingField::FtpHost) {
+                settings.ftpHost = editBuffer;
+            } else if (editField == SettingField::FtpPort) {
+                if (!editBuffer.empty()) {
+                    try {
+                        int value = std::stoi(editBuffer);
+                        settings.ftpPort = std::clamp(value, 1, 65535);
+                    } catch (const std::exception&) {
+                    }
+                }
+            } else if (editField == SettingField::FtpUser) {
+                settings.ftpUser = editBuffer;
+            } else if (editField == SettingField::FtpPass) {
+                settings.ftpPass = editBuffer;
+            }
+            mode = Mode::Settings;
+            SDL_StopTextInput();
+        };
+        auto cancelEdit = [&]() {
+            mode = Mode::Settings;
+            SDL_StopTextInput();
+        };
+
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -1744,11 +1944,9 @@ int main(int argc, char** argv) {
                         appMenuIndex = 0;
                         mode = Mode::AppMenu;
                     } else if (mode == Mode::EditSetting) {
-                        mode = Mode::Settings;
-                        SDL_StopTextInput();
+                        cancelEdit();
                     } else if (mode == Mode::Rename) {
-                        mode = Mode::Browse;
-                        SDL_StopTextInput();
+                        cancelRename();
                     } else if (mode == Mode::Settings) {
                         mode = Mode::AppMenu;
                     } else {
@@ -1783,7 +1981,7 @@ int main(int argc, char** argv) {
                         menuIndex = (menuIndex + 1) % static_cast<int>(actionOptions.size());
                     } else if (key == SDLK_RETURN) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, &transferCtx);
+                                             confirmIndex, renameBuffer, osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
@@ -1804,17 +2002,7 @@ int main(int argc, char** argv) {
                     if (key == SDLK_BACKSPACE && !renameBuffer.empty()) {
                         renameBuffer.pop_back();
                     } else if (key == SDLK_RETURN) {
-                        std::string error;
-                        if (!renameBuffer.empty() && renameBuffer != action.entry.name) {
-                            if (renameInPane(panes[action.paneIndex], action.entry, settings, renameBuffer, error)) {
-                                setStatus(status, "Renamed");
-                                loadEntries(panes[action.paneIndex], settings, &status);
-                            } else {
-                                setStatus(status, "Rename failed: " + error);
-                            }
-                        }
-                        mode = Mode::Browse;
-                        SDL_StopTextInput();
+                        commitRename();
                     }
                 } else if (mode == Mode::AppMenu) {
                     if (key == SDLK_UP) {
@@ -1871,6 +2059,7 @@ int main(int argc, char** argv) {
                                 editField = SettingField::FtpPass;
                                 editBuffer = settings.ftpPass;
                             }
+                            osk = {};
                             mode = Mode::EditSetting;
                             SDL_StartTextInput();
                         }
@@ -1879,23 +2068,7 @@ int main(int argc, char** argv) {
                     if (key == SDLK_BACKSPACE && !editBuffer.empty()) {
                         editBuffer.pop_back();
                     } else if (key == SDLK_RETURN) {
-                        if (editField == SettingField::FtpHost) {
-                            settings.ftpHost = editBuffer;
-                        } else if (editField == SettingField::FtpPort) {
-                            if (!editBuffer.empty()) {
-                                try {
-                                    int value = std::stoi(editBuffer);
-                                    settings.ftpPort = std::clamp(value, 1, 65535);
-                                } catch (const std::exception&) {
-                                }
-                            }
-                        } else if (editField == SettingField::FtpUser) {
-                            settings.ftpUser = editBuffer;
-                        } else if (editField == SettingField::FtpPass) {
-                            settings.ftpPass = editBuffer;
-                        }
-                        mode = Mode::Settings;
-                        SDL_StopTextInput();
+                        commitEdit();
                     }
                 } else if (mode == Mode::ConfirmQuit) {
                     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
@@ -1945,7 +2118,7 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     } else if (button == SDL_CONTROLLER_BUTTON_A) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, &transferCtx);
+                                             confirmIndex, renameBuffer, osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
@@ -1965,27 +2138,60 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     }
                 } else if (mode == Mode::Rename) {
-                    if (button == SDL_CONTROLLER_BUTTON_X) {
+                    auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                    clampOskSelection(osk, layout);
+                    int rows = static_cast<int>(layout.size());
+                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                        osk.row = (osk.row + rows - 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
+                        osk.row = (osk.row + 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + cols - 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (!layout.empty() && !layout[osk.row].empty()) {
+                            const OskKey& key = layout[osk.row][osk.col];
+                            if (key.action == OskAction::None) {
+                                appendFiltered(renameBuffer, key.value, false);
+                            } else if (key.action == OskAction::Backspace) {
+                                if (!renameBuffer.empty()) {
+                                    renameBuffer.pop_back();
+                                }
+                            } else if (key.action == OskAction::Clear) {
+                                renameBuffer.clear();
+                            } else if (key.action == OskAction::Ok) {
+                                commitRename();
+                            } else if (key.action == OskAction::Cancel) {
+                                cancelRename();
+                            } else if (key.action == OskAction::ToggleShift) {
+                                osk.uppercase = !osk.uppercase;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            } else if (key.action == OskAction::ToggleSymbols) {
+                                osk.symbols = !osk.symbols;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            }
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
                         if (!renameBuffer.empty()) {
                             renameBuffer.pop_back();
                         }
                     } else if (button == SDL_CONTROLLER_BUTTON_Y) {
                         renameBuffer.clear();
                     } else if (button == SDL_CONTROLLER_BUTTON_START) {
-                        std::string error;
-                        if (!renameBuffer.empty() && renameBuffer != action.entry.name) {
-                            if (renameInPane(panes[action.paneIndex], action.entry, settings, renameBuffer, error)) {
-                                setStatus(status, "Renamed");
-                                loadEntries(panes[action.paneIndex], settings, &status);
-                            } else {
-                                setStatus(status, "Rename failed: " + error);
-                            }
-                        }
-                        mode = Mode::Browse;
-                        SDL_StopTextInput();
+                        commitRename();
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
-                        mode = Mode::Browse;
-                        SDL_StopTextInput();
+                        cancelRename();
                     }
                 } else if (mode == Mode::AppMenu) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
@@ -2046,38 +2252,67 @@ int main(int argc, char** argv) {
                                 editField = SettingField::FtpPass;
                                 editBuffer = settings.ftpPass;
                             }
+                            osk = {};
                             mode = Mode::EditSetting;
                             SDL_StartTextInput();
                         }
                     }
                 } else if (mode == Mode::EditSetting) {
-                    if (button == SDL_CONTROLLER_BUTTON_X) {
+                    bool numeric = (editField == SettingField::FtpPort);
+                    auto layout = buildOskLayout(osk.uppercase, osk.symbols, numeric);
+                    clampOskSelection(osk, layout);
+                    int rows = static_cast<int>(layout.size());
+                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                        osk.row = (osk.row + rows - 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
+                        osk.row = (osk.row + 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + cols - 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (!layout.empty() && !layout[osk.row].empty()) {
+                            const OskKey& key = layout[osk.row][osk.col];
+                            if (key.action == OskAction::None) {
+                                appendFiltered(editBuffer, key.value, numeric);
+                            } else if (key.action == OskAction::Backspace) {
+                                if (!editBuffer.empty()) {
+                                    editBuffer.pop_back();
+                                }
+                            } else if (key.action == OskAction::Clear) {
+                                editBuffer.clear();
+                            } else if (key.action == OskAction::Ok) {
+                                commitEdit();
+                            } else if (key.action == OskAction::Cancel) {
+                                cancelEdit();
+                            } else if (key.action == OskAction::ToggleShift) {
+                                osk.uppercase = !osk.uppercase;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, numeric);
+                                clampOskSelection(osk, updated);
+                            } else if (key.action == OskAction::ToggleSymbols) {
+                                osk.symbols = !osk.symbols;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, numeric);
+                                clampOskSelection(osk, updated);
+                            }
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
                         if (!editBuffer.empty()) {
                             editBuffer.pop_back();
                         }
                     } else if (button == SDL_CONTROLLER_BUTTON_Y) {
                         editBuffer.clear();
                     } else if (button == SDL_CONTROLLER_BUTTON_START) {
-                        if (editField == SettingField::FtpHost) {
-                            settings.ftpHost = editBuffer;
-                        } else if (editField == SettingField::FtpPort) {
-                            if (!editBuffer.empty()) {
-                                try {
-                                    int value = std::stoi(editBuffer);
-                                    settings.ftpPort = std::clamp(value, 1, 65535);
-                                } catch (const std::exception&) {
-                                }
-                            }
-                        } else if (editField == SettingField::FtpUser) {
-                            settings.ftpUser = editBuffer;
-                        } else if (editField == SettingField::FtpPass) {
-                            settings.ftpPass = editBuffer;
-                        }
-                        mode = Mode::Settings;
-                        SDL_StopTextInput();
+                        commitEdit();
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
-                        mode = Mode::Settings;
-                        SDL_StopTextInput();
+                        cancelEdit();
                     }
                 } else if (mode == Mode::ConfirmQuit) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
@@ -2210,9 +2445,12 @@ int main(int argc, char** argv) {
 
             int modalWidth = static_cast<int>(std::round(440.0f * uiScale));
             int modalHeight = static_cast<int>(std::round(280.0f * uiScale));
-            if (mode == Mode::Settings || mode == Mode::EditSetting) {
+            if (mode == Mode::Settings) {
                 modalWidth = static_cast<int>(std::round(520.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(340.0f * uiScale));
+            } else if (mode == Mode::EditSetting || mode == Mode::Rename) {
+                modalWidth = static_cast<int>(std::round(520.0f * uiScale));
+                modalHeight = static_cast<int>(std::round(420.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
                 modalWidth = static_cast<int>(std::round(360.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(240.0f * uiScale));
@@ -2288,11 +2526,17 @@ int main(int argc, char** argv) {
                          fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
                          fontScale, modalText, ellipsize(renameBuffer, fieldMaxChars));
 
+                int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
+                SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
+                auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                clampOskSelection(osk, layout);
+                drawOsk(renderer, oskArea, fontScale, uiScale, modalText, layout, osk);
+
                 drawText(renderer,
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::AppMenu) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Menu");
                 for (size_t i = 0; i < appMenuOptions.size(); ++i) {
@@ -2377,11 +2621,18 @@ int main(int argc, char** argv) {
                          fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
                          fontScale, modalText, ellipsize(editBuffer, fieldMaxChars));
 
+                int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
+                SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
+                bool numeric = (editField == SettingField::FtpPort);
+                auto layout = buildOskLayout(osk.uppercase, osk.symbols, numeric);
+                clampOskSelection(osk, layout);
+                drawOsk(renderer, oskArea, fontScale, uiScale, modalText, layout, osk);
+
                 drawText(renderer,
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::ConfirmQuit) {
                 drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Quit GamepadCommander?");
                 SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};

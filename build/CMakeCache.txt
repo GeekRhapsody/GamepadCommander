@@ -14,6 +14,12 @@
 # EXTERNAL cache entries
 ########################
 
+//Path to appimagetool
+APPIMAGETOOL:FILEPATH=/home/claudio/Applications/appimagetool-x86_64.AppImage
+
+//Build AppImage during the default build
+BUILD_APPIMAGE:BOOL=ON
+
 //Path to a program.
 CMAKE_ADDR2LINE:FILEPATH=/usr/bin/addr2line
 

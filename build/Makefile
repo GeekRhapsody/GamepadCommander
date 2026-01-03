@@ -129,6 +129,19 @@ GamepadCommander/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/GamepadCommander.dir/build.make CMakeFiles/GamepadCommander.dir/build
 .PHONY : GamepadCommander/fast
 
+#=============================================================================
+# Target rules for targets named appimage
+
+# Build rule for target.
+appimage: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 appimage
+.PHONY : appimage
+
+# fast build rule for target.
+appimage/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/appimage.dir/build.make CMakeFiles/appimage.dir/build
+.PHONY : appimage/fast
+
 src/main.o: src/main.cpp.o
 .PHONY : src/main.o
 
@@ -161,6 +174,7 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... appimage"
 	@echo "... GamepadCommander"
 	@echo "... src/main.o"
 	@echo "... src/main.i"

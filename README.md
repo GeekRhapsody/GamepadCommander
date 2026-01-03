@@ -2,9 +2,26 @@
 
 Gamepad-first, two-pane file manager inspired by Total Commander.
 
+## Build
+
 ```bash
 cmake -S . -B build
 cmake --build build
+```
+
+## AppImage
+
+Requires `appimagetool` in your PATH (or pass `-DAPPIMAGETOOL=/path/to/appimagetool`).
+
+```bash
+cmake -S . -B build -DBUILD_APPIMAGE=ON
+cmake --build build
+```
+
+Or build only the AppImage target:
+
+```bash
+cmake --build build --target appimage
 ```
 
 ## Run
@@ -25,9 +42,10 @@ cmake --build build
 - Y: Clear rename buffer
 
 Rename modal:
-- Left/Right: Choose character
-- A: Add character
+- Use OSK/keyboard for text input
 - X: Backspace
+- Y: Clear rename buffer
+- Start: Confirm rename
 - B: Cancel
 
 ## Controls (Keyboard)

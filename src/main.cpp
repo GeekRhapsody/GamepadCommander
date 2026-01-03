@@ -1438,7 +1438,6 @@ static void handleActionSelection(int menuIndex,
                                   Mode& mode,
                                   int& confirmIndex,
                                   std::string& renameBuffer,
-                                  int& renameCharIndex,
                                   TransferContext* transferCtx) {
     if (menuIndex == 2) {
         mode = Mode::ConfirmDelete;
@@ -1447,7 +1446,6 @@ static void handleActionSelection(int menuIndex,
     }
     if (menuIndex == 3) {
         renameBuffer = action.entry.name;
-        renameCharIndex = 0;
         mode = Mode::Rename;
         SDL_StartTextInput();
         return;
@@ -1613,6 +1611,11 @@ int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
 
+#ifdef __linux__
+    // Keep the compositor active so the Steam OSK/overlay can appear above fullscreen.
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+#endif
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
         SDL_Log("SDL init failed: %s", SDL_GetError());
         return 1;
@@ -1694,11 +1697,7 @@ int main(int argc, char** argv) {
     const std::array<std::string, 7> settingsOptions = {"FTP Host", "FTP Port", "FTP User", "FTP Password", "UI Scale", "Show Hidden", "Back"};
 
     std::string renameBuffer;
-    const std::string renameChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_. ";
-    int renameCharIndex = 0;
     std::string editBuffer;
-    std::string editChars = renameChars;
-    int editCharIndex = 0;
     SettingField editField = SettingField::FtpHost;
     TransferState transfer;
 
@@ -1784,7 +1783,7 @@ int main(int argc, char** argv) {
                         menuIndex = (menuIndex + 1) % static_cast<int>(actionOptions.size());
                     } else if (key == SDLK_RETURN) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, renameCharIndex, &transferCtx);
+                                             confirmIndex, renameBuffer, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
@@ -1862,21 +1861,16 @@ int main(int argc, char** argv) {
                             if (option == "FTP Host") {
                                 editField = SettingField::FtpHost;
                                 editBuffer = settings.ftpHost;
-                                editChars = renameChars;
                             } else if (option == "FTP Port") {
                                 editField = SettingField::FtpPort;
                                 editBuffer = std::to_string(settings.ftpPort);
-                                editChars = "0123456789";
                             } else if (option == "FTP User") {
                                 editField = SettingField::FtpUser;
                                 editBuffer = settings.ftpUser;
-                                editChars = renameChars;
                             } else if (option == "FTP Password") {
                                 editField = SettingField::FtpPass;
                                 editBuffer = settings.ftpPass;
-                                editChars = renameChars;
                             }
-                            editCharIndex = 0;
                             mode = Mode::EditSetting;
                             SDL_StartTextInput();
                         }
@@ -1951,7 +1945,7 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     } else if (button == SDL_CONTROLLER_BUTTON_A) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, renameCharIndex, &transferCtx);
+                                             confirmIndex, renameBuffer, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
@@ -1971,13 +1965,7 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     }
                 } else if (mode == Mode::Rename) {
-                    if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-                        renameCharIndex = (renameCharIndex + static_cast<int>(renameChars.size()) - 1) % static_cast<int>(renameChars.size());
-                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                        renameCharIndex = (renameCharIndex + 1) % static_cast<int>(renameChars.size());
-                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
-                        renameBuffer.push_back(renameChars[static_cast<size_t>(renameCharIndex)]);
-                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+                    if (button == SDL_CONTROLLER_BUTTON_X) {
                         if (!renameBuffer.empty()) {
                             renameBuffer.pop_back();
                         }
@@ -2048,33 +2036,22 @@ int main(int argc, char** argv) {
                             if (option == "FTP Host") {
                                 editField = SettingField::FtpHost;
                                 editBuffer = settings.ftpHost;
-                                editChars = renameChars;
                             } else if (option == "FTP Port") {
                                 editField = SettingField::FtpPort;
                                 editBuffer = std::to_string(settings.ftpPort);
-                                editChars = "0123456789";
                             } else if (option == "FTP User") {
                                 editField = SettingField::FtpUser;
                                 editBuffer = settings.ftpUser;
-                                editChars = renameChars;
                             } else if (option == "FTP Password") {
                                 editField = SettingField::FtpPass;
                                 editBuffer = settings.ftpPass;
-                                editChars = renameChars;
                             }
-                            editCharIndex = 0;
                             mode = Mode::EditSetting;
                             SDL_StartTextInput();
                         }
                     }
                 } else if (mode == Mode::EditSetting) {
-                    if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-                        editCharIndex = (editCharIndex + static_cast<int>(editChars.size()) - 1) % static_cast<int>(editChars.size());
-                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                        editCharIndex = (editCharIndex + 1) % static_cast<int>(editChars.size());
-                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
-                        editBuffer.push_back(editChars[static_cast<size_t>(editCharIndex)]);
-                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+                    if (button == SDL_CONTROLLER_BUTTON_X) {
                         if (!editBuffer.empty()) {
                             editBuffer.pop_back();
                         }
@@ -2299,7 +2276,7 @@ int main(int argc, char** argv) {
             } else if (mode == Mode::Rename) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Rename");
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,
-                         "Use D-Pad Left/Right to pick chars.");
+                         "Use OSK/keyboard to type.");
 
                 SDL_Rect fieldRect {modal.x + padding, modal.y + padding + static_cast<int>(std::round(70.0f * uiScale)),
                                     modal.w - padding * 2, static_cast<int>(std::round(40.0f * uiScale))};
@@ -2311,16 +2288,11 @@ int main(int argc, char** argv) {
                          fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
                          fontScale, modalText, ellipsize(renameBuffer, fieldMaxChars));
 
-                std::string charDisplay(1, renameChars[static_cast<size_t>(renameCharIndex)]);
-                drawText(renderer,
-                         modal.x + padding, modal.y + padding + static_cast<int>(std::round(140.0f * uiScale)),
-                         fontScale, modalText, "Char: " + charDisplay);
-
                 drawText(renderer,
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "A: Add  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::AppMenu) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Menu");
                 for (size_t i = 0; i < appMenuOptions.size(); ++i) {
@@ -2393,7 +2365,7 @@ int main(int argc, char** argv) {
                 }
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, editTitle);
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)),
-                         smallScale, modalText, "Use D-Pad Left/Right to pick chars.");
+                         smallScale, modalText, "Use OSK/keyboard to type.");
 
                 SDL_Rect fieldRect {modal.x + padding, modal.y + padding + static_cast<int>(std::round(70.0f * uiScale)),
                                     modal.w - padding * 2, static_cast<int>(std::round(40.0f * uiScale))};
@@ -2405,18 +2377,11 @@ int main(int argc, char** argv) {
                          fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
                          fontScale, modalText, ellipsize(editBuffer, fieldMaxChars));
 
-                if (!editChars.empty()) {
-                    std::string charDisplay(1, editChars[static_cast<size_t>(editCharIndex)]);
-                    drawText(renderer,
-                             modal.x + padding, modal.y + padding + static_cast<int>(std::round(140.0f * uiScale)),
-                             fontScale, modalText, "Char: " + charDisplay);
-                }
-
                 drawText(renderer,
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "A: Add  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::ConfirmQuit) {
                 drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Quit GamepadCommander?");
                 SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};

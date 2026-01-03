@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GamepadCommander
+Comment=Gamepad-first two-pane file manager
+Exec=GamepadCommander
+Icon=GamepadCommander
+Categories=Utility;FileManager;
+Terminal=false

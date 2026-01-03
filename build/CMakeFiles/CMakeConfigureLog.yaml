@@ -1874,3 +1874,109 @@ events:
       CMAKE_SYSTEM_LIBRARY_PATH:
         - "/usr/lib/X11"
 ...
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "CMakeLists.txt:36 (find_program)"
+    mode: "program"
+    variable: "APPIMAGETOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "NEVER"
+      SearchAppBundle: "NEVER"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "appimagetool"
+    candidate_directories:
+      - "/home/claudio/.nix-profile/bin/"
+      - "/nix/var/nix/profiles/default/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/bin/"
+      - "/usr/bin/"
+      - "/Applications/"
+      - "/home/claudio/.local/share/flatpak/exports/bin/"
+      - "/var/lib/flatpak/exports/bin/"
+      - "/usr/lib/jvm/default/bin/"
+      - "/usr/bin/site_perl/"
+      - "/usr/bin/vendor_perl/"
+      - "/usr/bin/core_perl/"
+      - "/usr/local/bin/"
+      - "/usr/local/sbin/"
+      - "/usr/local/"
+      - "/usr/bin/"
+      - "/usr/sbin/"
+      - "/usr/"
+      - "/bin/"
+      - "/sbin/"
+      - "/usr/X11R6/bin/"
+      - "/usr/X11R6/sbin/"
+      - "/usr/X11R6/"
+      - "/usr/pkg/bin/"
+      - "/usr/pkg/sbin/"
+      - "/usr/pkg/"
+      - "/opt/bin/"
+      - "/opt/sbin/"
+      - "/opt/"
+    searched_directories:
+      - "/home/claudio/.nix-profile/bin/appimagetool"
+      - "/nix/var/nix/profiles/default/bin/appimagetool"
+      - "/usr/local/sbin/appimagetool"
+      - "/usr/local/bin/appimagetool"
+      - "/usr/bin/appimagetool"
+      - "/Applications/appimagetool"
+      - "/home/claudio/.local/share/flatpak/exports/bin/appimagetool"
+      - "/var/lib/flatpak/exports/bin/appimagetool"
+      - "/usr/lib/jvm/default/bin/appimagetool"
+      - "/usr/bin/site_perl/appimagetool"
+      - "/usr/bin/vendor_perl/appimagetool"
+      - "/usr/bin/core_perl/appimagetool"
+      - "/usr/local/bin/appimagetool"
+      - "/usr/local/sbin/appimagetool"
+      - "/usr/local/appimagetool"
+      - "/usr/bin/appimagetool"
+      - "/usr/sbin/appimagetool"
+      - "/usr/appimagetool"
+      - "/bin/appimagetool"
+      - "/sbin/appimagetool"
+      - "/usr/X11R6/bin/appimagetool"
+      - "/usr/X11R6/sbin/appimagetool"
+      - "/usr/X11R6/appimagetool"
+      - "/usr/pkg/bin/appimagetool"
+      - "/usr/pkg/sbin/appimagetool"
+      - "/usr/pkg/appimagetool"
+      - "/opt/bin/appimagetool"
+      - "/opt/sbin/appimagetool"
+      - "/opt/appimagetool"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/home/claudio/.nix-profile/bin"
+        - "/nix/var/nix/profiles/default/bin"
+        - "/usr/local/sbin"
+        - "/usr/local/bin"
+        - "/usr/bin"
+        - "/Applications"
+        - "/home/claudio/.local/share/flatpak/exports/bin"
+        - "/var/lib/flatpak/exports/bin"
+        - "/usr/lib/jvm/default/bin"
+        - "/usr/bin/site_perl"
+        - "/usr/bin/vendor_perl"
+        - "/usr/bin/core_perl"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+      CMAKE_SYSTEM_PREFIX_PATH:
+        - "/usr/local"
+        - "/usr"
+        - "/"
+        - "/usr"
+        - "/usr/local"
+        - "/usr/X11R6"
+        - "/usr/pkg"
+        - "/opt"
+...

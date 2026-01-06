@@ -417,9 +417,9 @@ static bool addExeToSteam(const fs::path& exePath,
                           " --start-dir " + quoteWrappedArg(dirArg) +
                           " --app-name " + quoteArg(appName) +
                           " --launch-options " + quoteArg(launchOptions);
-    if (!compatibilityToolVersion.empty()) {
-        command += " --compatibility-tool-version " + quoteArg(compatibilityToolVersion);
-    }
+    // if (!compatibilityToolVersion.empty()) {
+    //     command += " --compatibility-tool-version " + quoteArg(compatibilityToolVersion);
+    // }
     SDL_Log("nonsteam command: %s", command.c_str());
     int result = std::system(command.c_str());
     if (result != 0) {

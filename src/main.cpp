@@ -258,6 +258,8 @@ struct TransferState {
     std::string title;
     std::string item;
     double progress = 0.0;
+    int countCurrent = 0;
+    int countTotal = 0;
     std::chrono::steady_clock::time_point lastDraw;
 };
 
@@ -611,6 +613,13 @@ static void drawTransferScreen(SDL_Renderer* renderer, SDL_Window* window, const
     std::string percentLabel = std::to_string(percent) + "%";
     drawText(renderer, modal.x + padding, modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
              smallScale, textColor, percentLabel);
+    if (transfer.countTotal > 0) {
+        std::string countLabel = std::to_string(transfer.countCurrent) + " of " + std::to_string(transfer.countTotal);
+        int labelWidth = textWidth(smallScale, countLabel);
+        int labelX = std::max(modal.x + padding, modal.x + modal.w - padding - labelWidth);
+        drawText(renderer, labelX, modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                 smallScale, textColor, countLabel);
+    }
 
     SDL_RenderPresent(renderer);
 }
@@ -631,7 +640,7 @@ static void pumpTransferUI(TransferContext& ctx) {
     drawTransferScreen(ctx.renderer, ctx.window, *ctx.settings, *ctx.transfer);
 }
 
-static void startTransferItem(TransferContext* ctx, const std::string& title, const std::string& item) {
+static void startTransferItem(TransferContext* ctx, const std::string& title, const std::string& item, bool resetCount = true) {
     if (!ctx || !ctx->transfer) {
         return;
     }
@@ -639,6 +648,10 @@ static void startTransferItem(TransferContext* ctx, const std::string& title, co
     ctx->transfer->title = title;
     ctx->transfer->item = item;
     ctx->transfer->progress = 0.0;
+    if (resetCount) {
+        ctx->transfer->countCurrent = 0;
+        ctx->transfer->countTotal = 0;
+    }
     ctx->transfer->lastDraw = std::chrono::steady_clock::now() - std::chrono::milliseconds(100);
     pumpTransferUI(*ctx);
 }
@@ -648,6 +661,19 @@ static void updateTransferProgress(TransferContext* ctx, double progress) {
         return;
     }
     ctx->transfer->progress = progress;
+    auto now = std::chrono::steady_clock::now();
+    if (now - ctx->transfer->lastDraw > std::chrono::milliseconds(33)) {
+        ctx->transfer->lastDraw = now;
+        pumpTransferUI(*ctx);
+    }
+}
+
+static void updateTransferCount(TransferContext* ctx, int current, int total) {
+    if (!ctx || !ctx->transfer) {
+        return;
+    }
+    ctx->transfer->countCurrent = std::max(0, current);
+    ctx->transfer->countTotal = std::max(0, total);
     auto now = std::chrono::steady_clock::now();
     if (now - ctx->transfer->lastDraw > std::chrono::milliseconds(33)) {
         ctx->transfer->lastDraw = now;
@@ -1339,7 +1365,8 @@ static bool ftpDeleteRecursive(const Settings& settings, const std::string& remo
 }
 
 static bool copyLocalFileWithProgress(const fs::path& src, const fs::path& dst, TransferContext* ctx,
-                                      const std::string& title, const std::string& label, std::string& error) {
+                                      const std::string& title, const std::string& label, bool resetCount,
+                                      std::string& error) {
     if (fs::exists(dst)) {
         error = "Target already exists";
         return false;
@@ -1362,7 +1389,7 @@ static bool copyLocalFileWithProgress(const fs::path& src, const fs::path& dst, 
     }
 
     if (ctx) {
-        startTransferItem(ctx, title, label);
+        startTransferItem(ctx, title, label, resetCount);
     }
 
     const size_t bufferSize = 64 * 1024;
@@ -1405,7 +1432,24 @@ static bool copyLocalDirectoryWithProgress(const fs::path& srcDir, const fs::pat
         error = "Failed to create target directory";
         return false;
     }
-    for (const auto& entry : fs::recursive_directory_iterator(srcDir)) {
+    int totalFiles = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(srcDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (entry.is_regular_file(ec)) {
+            ++totalFiles;
+        }
+    }
+    int copiedFiles = 0;
+    if (ctx && totalFiles > 0) {
+        updateTransferCount(ctx, 0, totalFiles);
+    }
+    ec.clear();
+    for (const auto& entry : fs::recursive_directory_iterator(srcDir, ec)) {
+        if (ec) {
+            break;
+        }
         const fs::path& path = entry.path();
         fs::path relative = fs::relative(path, srcDir, ec);
         if (ec) {
@@ -1416,8 +1460,12 @@ static bool copyLocalDirectoryWithProgress(const fs::path& srcDir, const fs::pat
             std::error_code dirEc;
             fs::create_directories(target, dirEc);
         } else if (entry.is_regular_file()) {
-            if (!copyLocalFileWithProgress(path, target, ctx, title, relative.string(), error)) {
+            if (!copyLocalFileWithProgress(path, target, ctx, title, relative.string(), false, error)) {
                 return false;
+            }
+            ++copiedFiles;
+            if (ctx && totalFiles > 0) {
+                updateTransferCount(ctx, copiedFiles, totalFiles);
             }
         }
     }
@@ -1429,7 +1477,7 @@ static bool copyLocalPathWithProgress(const fs::path& src, const fs::path& dst, 
     if (fs::is_directory(src)) {
         return copyLocalDirectoryWithProgress(src, dst, ctx, title, error);
     }
-    return copyLocalFileWithProgress(src, dst, ctx, title, src.filename().string(), error);
+    return copyLocalFileWithProgress(src, dst, ctx, title, src.filename().string(), true, error);
 }
 
 static int countZipEntries(const fs::path& zipPath, std::string& error) {
@@ -1488,6 +1536,9 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
 
     if (ctx) {
         startTransferItem(ctx, "Extracting", zipPath.filename().string());
+        if (totalEntries > 0) {
+            updateTransferCount(ctx, 0, totalEntries);
+        }
     }
 
     std::string command = "unzip -o " + quoteArg(zipPath.string()) + " -d " + quoteArg(destDir.string()) + " 2>&1";
@@ -1513,6 +1564,7 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
                 ctx->transfer->item = item;
                 if (totalEntries > 0) {
                     updateTransferProgress(ctx, static_cast<double>(extracted) / static_cast<double>(totalEntries));
+                    updateTransferCount(ctx, extracted, totalEntries);
                 } else {
                     updateTransferProgress(ctx, 0.0);
                 }
@@ -1587,6 +1639,9 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
 
     if (ctx) {
         startTransferItem(ctx, "Extracting", rarPath.filename().string());
+        if (totalEntries > 0) {
+            updateTransferCount(ctx, 0, totalEntries);
+        }
     }
 
     std::string command = "unrar x -o+ -y " + quoteArg(rarPath.string()) + " " + quoteArg(destDir.string()) + " 2>&1";
@@ -1612,6 +1667,7 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
                 ctx->transfer->item = item;
                 if (totalEntries > 0) {
                     updateTransferProgress(ctx, static_cast<double>(extracted) / static_cast<double>(totalEntries));
+                    updateTransferCount(ctx, extracted, totalEntries);
                 } else {
                     updateTransferProgress(ctx, 0.0);
                 }

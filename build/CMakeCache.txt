@@ -17,6 +17,9 @@
 //Path to appimagetool
 APPIMAGETOOL:FILEPATH=/home/claudio/Applications/appimagetool-x86_64.AppImage
 
+//Path to AppImage runtime file
+APPIMAGE_RUNTIME:FILEPATH=/home/claudio/Coding/GamepadCommander/build/runtime-x86_64
+
 //Build AppImage during the default build
 BUILD_APPIMAGE:BOOL=ON
 

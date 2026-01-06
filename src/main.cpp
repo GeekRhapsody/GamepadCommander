@@ -204,6 +204,8 @@ static bool moveEntry(const Entry& entry, const fs::path& targetDir, std::string
 static bool deleteEntry(const Entry& entry, std::string& error);
 static bool renameEntry(const Entry& entry, const std::string& newName, std::string& error);
 static bool isWindowsExe(const Entry& entry, const Pane& pane);
+static bool isZipArchive(const Entry& entry, const Pane& pane);
+static bool isRarArchive(const Entry& entry, const Pane& pane);
 static std::string defaultSteamAppName(const Entry& entry);
 static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane);
 
@@ -1529,6 +1531,105 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
     return true;
 }
 
+static int countRarEntries(const fs::path& rarPath, std::string& error) {
+    std::string command = "unrar lb " + quoteArg(rarPath.string()) + " 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        error = "Failed to run unrar";
+        return -1;
+    }
+    int count = 0;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        std::string line = trimWhitespace(buffer);
+        if (!line.empty()) {
+            ++count;
+        }
+    }
+    int status = pclose(pipe);
+    if (status != 0) {
+        error = "unrar failed";
+        return -1;
+    }
+    return count;
+}
+
+static bool parseUnrarOutputLine(const std::string& line, std::string& item) {
+    std::string trimmed = trimWhitespace(line);
+    if (trimmed.empty()) {
+        return false;
+    }
+    std::string lowered = toLower(trimmed);
+    if (lowered.rfind("extracting ", 0) == 0) {
+        item = trimWhitespace(trimmed.substr(std::string("extracting ").size()));
+        return !item.empty();
+    }
+    if (lowered.rfind("creating ", 0) == 0) {
+        item = trimWhitespace(trimmed.substr(std::string("creating ").size()));
+        return !item.empty();
+    }
+    return false;
+}
+
+static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& destDir, TransferContext* ctx,
+                                   std::string& error) {
+    if (!fs::exists(destDir)) {
+        error = "Target directory not found";
+        return false;
+    }
+
+    int totalEntries = 0;
+    std::string listError;
+    int count = countRarEntries(rarPath, listError);
+    if (count > 0) {
+        totalEntries = count;
+    }
+
+    if (ctx) {
+        startTransferItem(ctx, "Extracting", rarPath.filename().string());
+    }
+
+    std::string command = "unrar x -o+ -y " + quoteArg(rarPath.string()) + " " + quoteArg(destDir.string()) + " 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        error = "Failed to run unrar";
+        return false;
+    }
+
+    int extracted = 0;
+    std::string lastLine;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        std::string line = buffer;
+        std::string trimmed = trimWhitespace(line);
+        if (!trimmed.empty()) {
+            lastLine = trimmed;
+        }
+        std::string item;
+        if (parseUnrarOutputLine(line, item)) {
+            ++extracted;
+            if (ctx && ctx->transfer) {
+                ctx->transfer->item = item;
+                if (totalEntries > 0) {
+                    updateTransferProgress(ctx, static_cast<double>(extracted) / static_cast<double>(totalEntries));
+                } else {
+                    updateTransferProgress(ctx, 0.0);
+                }
+            }
+        }
+    }
+
+    int status = pclose(pipe);
+    if (status != 0) {
+        error = lastLine.empty() ? "unrar failed" : "unrar failed: " + lastLine;
+        return false;
+    }
+    if (ctx) {
+        updateTransferProgress(ctx, 1.0);
+    }
+    return true;
+}
+
 static bool parseFtpListLine(const std::string& line, Entry& entry) {
     if (line.empty()) {
         return false;
@@ -1838,7 +1939,14 @@ static void handleActionSelection(int menuIndex,
     }
     if (option == "Extract") {
         std::string error;
-        bool ok = extractZipWithProgress(action.entry.path, panes[action.paneIndex].cwd, transferCtx, error);
+        bool ok = false;
+        if (isZipArchive(action.entry, panes[action.paneIndex])) {
+            ok = extractZipWithProgress(action.entry.path, panes[action.paneIndex].cwd, transferCtx, error);
+        } else if (isRarArchive(action.entry, panes[action.paneIndex])) {
+            ok = extractRarWithProgress(action.entry.path, panes[action.paneIndex].cwd, transferCtx, error);
+        } else {
+            error = "Unsupported archive";
+        }
         setStatus(status, ok ? "Extracted" : ("Extract failed: " + error));
         if (transferCtx) {
             finishTransfer(transferCtx);
@@ -1905,6 +2013,17 @@ static bool isZipArchive(const Entry& entry, const Pane& pane) {
     return ext == ".zip";
 }
 
+static bool isRarArchive(const Entry& entry, const Pane& pane) {
+    if (pane.source != PaneSource::Local) {
+        return false;
+    }
+    if (entry.isDir || entry.isParent) {
+        return false;
+    }
+    std::string ext = toLower(entry.path.extension().string());
+    return ext == ".rar";
+}
+
 static std::string defaultSteamAppName(const Entry& entry) {
     std::string name = entry.path.stem().string();
     if (name.empty()) {
@@ -1915,7 +2034,7 @@ static std::string defaultSteamAppName(const Entry& entry) {
 
 static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane) {
     std::vector<std::string> options = {"Copy", "Move", "Delete", "Rename"};
-    if (isZipArchive(entry, pane)) {
+    if (isZipArchive(entry, pane) || isRarArchive(entry, pane)) {
         options.insert(options.begin() + 2, "Extract");
     }
     if (isWindowsExe(entry, pane)) {

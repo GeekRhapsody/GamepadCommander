@@ -222,6 +222,15 @@ GamepadCommander_IS_TOP_LEVEL:STATIC=ON
 //Value Computed by CMake
 GamepadCommander_SOURCE_DIR:STATIC=/home/claudio/Coding/GamepadCommander
 
+//Path to node
+NODE_TOOL:FILEPATH=/usr/bin/node
+
+//Path to nonsteam package root
+NONSTEAM_ROOT:PATH=
+
+//Path to nonsteam
+NONSTEAM_TOOL:FILEPATH=/home/claudio/Coding/GamepadCommander/assets/nonsteam
+
 //Arguments to supply to pkg-config
 PKG_CONFIG_ARGN:STRING=
 

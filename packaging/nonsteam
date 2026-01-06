@@ -1,0 +1,5 @@
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+NODE_BIN="$HERE/node"
+NONSTEAM_JS="$HERE/../lib/node_modules/nonsteam/dist/bundle/cli.js"
+exec "$NODE_BIN" "$NONSTEAM_JS" "$@"

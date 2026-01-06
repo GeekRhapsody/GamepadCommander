@@ -180,6 +180,8 @@ enum class Mode {
     ActionMenu,
     ConfirmDelete,
     Rename,
+    AddToSteam,
+    Notice,
     AppMenu,
     Settings,
     EditSetting,
@@ -201,12 +203,17 @@ static bool copyEntry(const Entry& entry, const fs::path& targetDir, std::string
 static bool moveEntry(const Entry& entry, const fs::path& targetDir, std::string& error);
 static bool deleteEntry(const Entry& entry, std::string& error);
 static bool renameEntry(const Entry& entry, const std::string& newName, std::string& error);
+static bool isWindowsExe(const Entry& entry, const Pane& pane);
+static std::string defaultSteamAppName(const Entry& entry);
+static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane);
 
 struct Settings {
     std::string ftpHost;
     int ftpPort = 21;
     std::string ftpUser;
     std::string ftpPass;
+    std::string steamLaunchOptions;
+    std::string steamCompatibilityToolVersion;
     float uiScale = 1.0f;
     bool showHidden = false;
     fs::path panePath[2];
@@ -216,7 +223,9 @@ enum class SettingField {
     FtpHost,
     FtpPort,
     FtpUser,
-    FtpPass
+    FtpPass,
+    SteamLaunchOptions,
+    SteamCompatibilityTool
 };
 
 enum class OskAction {
@@ -319,6 +328,34 @@ static std::string toLower(const std::string& text) {
     return out;
 }
 
+static std::string quoteArg(const std::string& text) {
+    std::string escaped = "\"";
+    for (char ch : text) {
+        if (ch == '\\' || ch == '"' || ch == '$' || ch == '`') {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(ch);
+    }
+    escaped += "\"";
+    return escaped;
+}
+
+static std::string quoteWrappedArg(const std::string& text) {
+    return "'" + quoteArg(text) + "'";
+}
+
+static std::string trimWhitespace(const std::string& text) {
+    size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start]))) {
+        ++start;
+    }
+    size_t end = text.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    return text.substr(start, end - start);
+}
+
 static std::string urlEncodeFilePath(const std::string& text) {
     std::ostringstream out;
     out << std::uppercase << std::hex;
@@ -341,6 +378,48 @@ static bool openLocalFile(const fs::path& path, std::string& error) {
     std::string url = fileUrlForPath(path);
     if (SDL_OpenURL(url.c_str()) != 0) {
         error = SDL_GetError();
+        return false;
+    }
+    return true;
+}
+
+static std::string resolveNonsteamPath() {
+    char* basePath = SDL_GetBasePath();
+    if (basePath) {
+        fs::path candidate = fs::path(basePath) / "nonsteam";
+        SDL_free(basePath);
+        if (fs::exists(candidate)) {
+            return candidate.string();
+        }
+    }
+    return "nonsteam";
+}
+
+static bool addExeToSteam(const fs::path& exePath,
+                          const std::string& appName,
+                          const std::string& launchOptions,
+                          const std::string& compatibilityToolVersion,
+                          std::string& error) {
+    if (appName.empty()) {
+        error = "App name is required";
+        return false;
+    }
+    fs::path absExe = fs::absolute(exePath);
+    fs::path startDir = absExe.parent_path();
+    std::string exeArg = absExe.string();
+    std::string dirArg = startDir.string();
+    std::string nonsteam = resolveNonsteamPath();
+    std::string command = quoteArg(nonsteam) + " add -w --exe " + quoteWrappedArg(exeArg) +
+                          " --start-dir " + quoteWrappedArg(dirArg) +
+                          " --app-name " + quoteArg(appName) +
+                          " --launch-options " + quoteArg(launchOptions);
+    if (!compatibilityToolVersion.empty()) {
+        command += " --compatibility-tool-version " + quoteArg(compatibilityToolVersion);
+    }
+    SDL_Log("nonsteam command: %s", command.c_str());
+    int result = std::system(command.c_str());
+    if (result != 0) {
+        error = "nonsteam failed";
         return false;
     }
     return true;
@@ -696,6 +775,8 @@ static bool loadConfig(Settings& settings, const std::string& path, const fs::pa
     }
     settings.ftpUser = unescapeXml(readTag(xml, "ftpUser"));
     settings.ftpPass = unescapeXml(readTag(xml, "ftpPass"));
+    settings.steamLaunchOptions = unescapeXml(readTag(xml, "steamLaunchOptions"));
+    settings.steamCompatibilityToolVersion = unescapeXml(readTag(xml, "steamCompatibilityToolVersion"));
     std::string showHiddenValue = readTag(xml, "showHidden");
     if (!showHiddenValue.empty()) {
         std::string lowered;
@@ -736,6 +817,9 @@ static bool saveConfig(const Settings& settings, const Pane panes[2], const std:
     file << "  <ftpPort>" << settings.ftpPort << "</ftpPort>\n";
     file << "  <ftpUser>" << escapeXml(settings.ftpUser) << "</ftpUser>\n";
     file << "  <ftpPass>" << escapeXml(settings.ftpPass) << "</ftpPass>\n";
+    file << "  <steamLaunchOptions>" << escapeXml(settings.steamLaunchOptions) << "</steamLaunchOptions>\n";
+    file << "  <steamCompatibilityToolVersion>" << escapeXml(settings.steamCompatibilityToolVersion)
+         << "</steamCompatibilityToolVersion>\n";
     file << "  <showHidden>" << (settings.showHidden ? "true" : "false") << "</showHidden>\n";
     file << "  <pane0>" << escapeXml(panes[0].lastLocalCwd.string()) << "</pane0>\n";
     file << "  <pane1>" << escapeXml(panes[1].lastLocalCwd.string()) << "</pane1>\n";
@@ -1346,6 +1430,105 @@ static bool copyLocalPathWithProgress(const fs::path& src, const fs::path& dst, 
     return copyLocalFileWithProgress(src, dst, ctx, title, src.filename().string(), error);
 }
 
+static int countZipEntries(const fs::path& zipPath, std::string& error) {
+    std::string command = "unzip -Z -1 " + quoteArg(zipPath.string()) + " 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        error = "Failed to run unzip";
+        return -1;
+    }
+    int count = 0;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        std::string line = trimWhitespace(buffer);
+        if (!line.empty()) {
+            ++count;
+        }
+    }
+    int status = pclose(pipe);
+    if (status != 0) {
+        error = "unzip failed";
+        return -1;
+    }
+    return count;
+}
+
+static bool parseUnzipOutputLine(const std::string& line, std::string& item) {
+    std::string trimmed = trimWhitespace(line);
+    if (trimmed.empty()) {
+        return false;
+    }
+    size_t colon = trimmed.find(':');
+    if (colon == std::string::npos) {
+        return false;
+    }
+    std::string prefix = toLower(trimWhitespace(trimmed.substr(0, colon)));
+    if (prefix == "inflating" || prefix == "extracting" || prefix == "creating") {
+        item = trimWhitespace(trimmed.substr(colon + 1));
+        return !item.empty();
+    }
+    return false;
+}
+
+static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& destDir, TransferContext* ctx,
+                                   std::string& error) {
+    if (!fs::exists(destDir)) {
+        error = "Target directory not found";
+        return false;
+    }
+
+    int totalEntries = 0;
+    std::string listError;
+    int count = countZipEntries(zipPath, listError);
+    if (count > 0) {
+        totalEntries = count;
+    }
+
+    if (ctx) {
+        startTransferItem(ctx, "Extracting", zipPath.filename().string());
+    }
+
+    std::string command = "unzip -o " + quoteArg(zipPath.string()) + " -d " + quoteArg(destDir.string()) + " 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        error = "Failed to run unzip";
+        return false;
+    }
+
+    int extracted = 0;
+    std::string lastLine;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        std::string line = buffer;
+        std::string trimmed = trimWhitespace(line);
+        if (!trimmed.empty()) {
+            lastLine = trimmed;
+        }
+        std::string item;
+        if (parseUnzipOutputLine(line, item)) {
+            ++extracted;
+            if (ctx && ctx->transfer) {
+                ctx->transfer->item = item;
+                if (totalEntries > 0) {
+                    updateTransferProgress(ctx, static_cast<double>(extracted) / static_cast<double>(totalEntries));
+                } else {
+                    updateTransferProgress(ctx, 0.0);
+                }
+            }
+        }
+    }
+
+    int status = pclose(pipe);
+    if (status != 0) {
+        error = lastLine.empty() ? "unzip failed" : "unzip failed: " + lastLine;
+        return false;
+    }
+    if (ctx) {
+        updateTransferProgress(ctx, 1.0);
+    }
+    return true;
+}
+
 static bool parseFtpListLine(const std::string& line, Entry& entry) {
     if (line.empty()) {
         return false;
@@ -1621,18 +1804,47 @@ static void handleActionSelection(int menuIndex,
                                   Mode& mode,
                                   int& confirmIndex,
                                   std::string& renameBuffer,
+                                  std::string& addToSteamName,
                                   OskState& osk,
                                   TransferContext* transferCtx) {
-    if (menuIndex == 2) {
+    auto options = buildActionOptions(action.entry, panes[action.paneIndex]);
+    if (options.empty()) {
+        mode = Mode::Browse;
+        return;
+    }
+    if (menuIndex < 0 || menuIndex >= static_cast<int>(options.size())) {
+        menuIndex = 0;
+    }
+    const std::string& option = options[static_cast<size_t>(menuIndex)];
+
+    if (option == "Delete") {
         mode = Mode::ConfirmDelete;
         confirmIndex = 1;
         return;
     }
-    if (menuIndex == 3) {
+    if (option == "Rename") {
         renameBuffer = action.entry.name;
         osk = {};
         mode = Mode::Rename;
         SDL_StartTextInput();
+        return;
+    }
+    if (option == "Add to Steam") {
+        addToSteamName = defaultSteamAppName(action.entry);
+        osk = {};
+        mode = Mode::AddToSteam;
+        SDL_StartTextInput();
+        return;
+    }
+    if (option == "Extract") {
+        std::string error;
+        bool ok = extractZipWithProgress(action.entry.path, panes[action.paneIndex].cwd, transferCtx, error);
+        setStatus(status, ok ? "Extracted" : ("Extract failed: " + error));
+        if (transferCtx) {
+            finishTransfer(transferCtx);
+        }
+        loadEntries(panes[action.paneIndex], settings, &status);
+        mode = Mode::Browse;
         return;
     }
 
@@ -1640,10 +1852,10 @@ static void handleActionSelection(int menuIndex,
     Pane& dst = panes[1 - action.paneIndex];
     std::string error;
     bool ok = false;
-    if (menuIndex == 0) {
+    if (option == "Copy") {
         ok = copyBetweenPanes(action.entry, src, dst, settings, transferCtx, "Copying", error);
         setStatus(status, ok ? "Copied" : ("Copy failed: " + error));
-    } else if (menuIndex == 1) {
+    } else if (option == "Move") {
         ok = moveBetweenPanes(action.entry, src, dst, settings, transferCtx, "Moving", error);
         setStatus(status, ok ? "Moved" : ("Move failed: " + error));
     }
@@ -1669,6 +1881,47 @@ static void ensureVisible(Pane& pane, int visibleRows) {
 static void setStatus(StatusMessage& status, const std::string& text) {
     status.text = text;
     status.started = std::chrono::steady_clock::now();
+}
+
+static bool isWindowsExe(const Entry& entry, const Pane& pane) {
+    if (pane.source != PaneSource::Local) {
+        return false;
+    }
+    if (entry.isDir || entry.isParent) {
+        return false;
+    }
+    std::string ext = toLower(entry.path.extension().string());
+    return ext == ".exe";
+}
+
+static bool isZipArchive(const Entry& entry, const Pane& pane) {
+    if (pane.source != PaneSource::Local) {
+        return false;
+    }
+    if (entry.isDir || entry.isParent) {
+        return false;
+    }
+    std::string ext = toLower(entry.path.extension().string());
+    return ext == ".zip";
+}
+
+static std::string defaultSteamAppName(const Entry& entry) {
+    std::string name = entry.path.stem().string();
+    if (name.empty()) {
+        return entry.name;
+    }
+    return name;
+}
+
+static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane) {
+    std::vector<std::string> options = {"Copy", "Move", "Delete", "Rename"};
+    if (isZipArchive(entry, pane)) {
+        options.insert(options.begin() + 2, "Extract");
+    }
+    if (isWindowsExe(entry, pane)) {
+        options.push_back("Add to Steam");
+    }
+    return options;
 }
 
 static bool statusActive(const StatusMessage& status) {
@@ -1888,11 +2141,20 @@ int main(int argc, char** argv) {
     ActionContext action;
     StatusMessage status;
 
-    const std::array<std::string, 4> actionOptions = {"Copy", "Move", "Delete", "Rename"};
     const std::array<std::string, 3> appMenuOptions = {"Settings", "Connect to FTP", "Quit"};
-    const std::array<std::string, 7> settingsOptions = {"FTP Host", "FTP Port", "FTP User", "FTP Password", "UI Scale", "Show Hidden", "Back"};
+    const std::array<std::string, 9> settingsOptions = {"FTP Host",
+                                                        "FTP Port",
+                                                        "FTP User",
+                                                        "FTP Password",
+                                                        "Steam Launch Options",
+                                                        "Steam Compatibility Tool",
+                                                        "UI Scale",
+                                                        "Show Hidden",
+                                                        "Back"};
 
     std::string renameBuffer;
+    std::string addToSteamName;
+    std::string noticeText;
     OskState osk;
     std::string editBuffer;
     SettingField editField = SettingField::FtpHost;
@@ -1918,6 +2180,21 @@ int main(int argc, char** argv) {
             mode = Mode::Browse;
             SDL_StopTextInput();
         };
+        auto commitAddToSteam = [&]() {
+            std::string error;
+            if (addExeToSteam(action.entry.path, addToSteamName, settings.steamLaunchOptions,
+                              settings.steamCompatibilityToolVersion, error)) {
+                noticeText = "Added to Steam: " + addToSteamName;
+            } else {
+                noticeText = "Add to Steam failed: " + error;
+            }
+            mode = Mode::Notice;
+            SDL_StopTextInput();
+        };
+        auto cancelAddToSteam = [&]() {
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
         auto commitEdit = [&]() {
             if (editField == SettingField::FtpHost) {
                 settings.ftpHost = editBuffer;
@@ -1933,6 +2210,10 @@ int main(int argc, char** argv) {
                 settings.ftpUser = editBuffer;
             } else if (editField == SettingField::FtpPass) {
                 settings.ftpPass = editBuffer;
+            } else if (editField == SettingField::SteamLaunchOptions) {
+                settings.steamLaunchOptions = editBuffer;
+            } else if (editField == SettingField::SteamCompatibilityTool) {
+                settings.steamCompatibilityToolVersion = editBuffer;
             }
             mode = Mode::Settings;
             SDL_StopTextInput();
@@ -1961,10 +2242,13 @@ int main(int argc, char** argv) {
                 }
             }
 
-            if (event.type == SDL_TEXTINPUT && (mode == Mode::Rename || mode == Mode::EditSetting)) {
+            if (event.type == SDL_TEXTINPUT &&
+                (mode == Mode::Rename || mode == Mode::EditSetting || mode == Mode::AddToSteam)) {
                 std::string input = event.text.text;
                 if (mode == Mode::Rename) {
                     renameBuffer += input;
+                } else if (mode == Mode::AddToSteam) {
+                    addToSteamName += input;
                 } else {
                     for (char ch : input) {
                         if (editField == SettingField::FtpPort && !std::isdigit(static_cast<unsigned char>(ch))) {
@@ -1983,6 +2267,10 @@ int main(int argc, char** argv) {
                         mode = Mode::AppMenu;
                     } else if (mode == Mode::EditSetting) {
                         cancelEdit();
+                    } else if (mode == Mode::AddToSteam) {
+                        cancelAddToSteam();
+                    } else if (mode == Mode::Notice) {
+                        mode = Mode::Browse;
                     } else if (mode == Mode::Rename) {
                         cancelRename();
                     } else if (mode == Mode::Settings) {
@@ -2013,13 +2301,21 @@ int main(int argc, char** argv) {
                         }
                     }
                 } else if (mode == Mode::ActionMenu) {
+                    auto actionOptions = buildActionOptions(action.entry, panes[action.paneIndex]);
+                    if (actionOptions.empty()) {
+                        mode = Mode::Browse;
+                        break;
+                    }
+                    if (menuIndex < 0 || menuIndex >= static_cast<int>(actionOptions.size())) {
+                        menuIndex = 0;
+                    }
                     if (key == SDLK_UP) {
                         menuIndex = (menuIndex + static_cast<int>(actionOptions.size()) - 1) % static_cast<int>(actionOptions.size());
                     } else if (key == SDLK_DOWN) {
                         menuIndex = (menuIndex + 1) % static_cast<int>(actionOptions.size());
                     } else if (key == SDLK_RETURN) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, osk, &transferCtx);
+                                             confirmIndex, renameBuffer, addToSteamName, osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
@@ -2041,6 +2337,12 @@ int main(int argc, char** argv) {
                         renameBuffer.pop_back();
                     } else if (key == SDLK_RETURN) {
                         commitRename();
+                    }
+                } else if (mode == Mode::AddToSteam) {
+                    if (key == SDLK_BACKSPACE && !addToSteamName.empty()) {
+                        addToSteamName.pop_back();
+                    } else if (key == SDLK_RETURN) {
+                        commitAddToSteam();
                     }
                 } else if (mode == Mode::AppMenu) {
                     if (key == SDLK_UP) {
@@ -2084,22 +2386,28 @@ int main(int argc, char** argv) {
                             loadEntries(panes[0], settings, &status);
                             loadEntries(panes[1], settings, &status);
                         } else {
-                            if (option == "FTP Host") {
-                                editField = SettingField::FtpHost;
-                                editBuffer = settings.ftpHost;
-                            } else if (option == "FTP Port") {
-                                editField = SettingField::FtpPort;
-                                editBuffer = std::to_string(settings.ftpPort);
-                            } else if (option == "FTP User") {
-                                editField = SettingField::FtpUser;
-                                editBuffer = settings.ftpUser;
-                            } else if (option == "FTP Password") {
-                                editField = SettingField::FtpPass;
-                                editBuffer = settings.ftpPass;
-                            }
-                            osk = {};
-                            mode = Mode::EditSetting;
-                            SDL_StartTextInput();
+                        if (option == "FTP Host") {
+                            editField = SettingField::FtpHost;
+                            editBuffer = settings.ftpHost;
+                        } else if (option == "FTP Port") {
+                            editField = SettingField::FtpPort;
+                            editBuffer = std::to_string(settings.ftpPort);
+                        } else if (option == "FTP User") {
+                            editField = SettingField::FtpUser;
+                            editBuffer = settings.ftpUser;
+                        } else if (option == "FTP Password") {
+                            editField = SettingField::FtpPass;
+                            editBuffer = settings.ftpPass;
+                        } else if (option == "Steam Launch Options") {
+                            editField = SettingField::SteamLaunchOptions;
+                            editBuffer = settings.steamLaunchOptions;
+                        } else if (option == "Steam Compatibility Tool") {
+                            editField = SettingField::SteamCompatibilityTool;
+                            editBuffer = settings.steamCompatibilityToolVersion;
+                        }
+                        osk = {};
+                        mode = Mode::EditSetting;
+                        SDL_StartTextInput();
                         }
                     }
                 } else if (mode == Mode::EditSetting) {
@@ -2115,6 +2423,10 @@ int main(int argc, char** argv) {
                         if (quitConfirmIndex == 0) {
                             running = false;
                         }
+                        mode = Mode::Browse;
+                    }
+                } else if (mode == Mode::Notice) {
+                    if (key == SDLK_RETURN || key == SDLK_SPACE) {
                         mode = Mode::Browse;
                     }
                 }
@@ -2148,6 +2460,14 @@ int main(int argc, char** argv) {
                         mode = Mode::AppMenu;
                     }
                 } else if (mode == Mode::ActionMenu) {
+                    auto actionOptions = buildActionOptions(action.entry, panes[action.paneIndex]);
+                    if (actionOptions.empty()) {
+                        mode = Mode::Browse;
+                        break;
+                    }
+                    if (menuIndex < 0 || menuIndex >= static_cast<int>(actionOptions.size())) {
+                        menuIndex = 0;
+                    }
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
                         menuIndex = (menuIndex + static_cast<int>(actionOptions.size()) - 1) % static_cast<int>(actionOptions.size());
                     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
@@ -2156,7 +2476,7 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     } else if (button == SDL_CONTROLLER_BUTTON_A) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, osk, &transferCtx);
+                                             confirmIndex, renameBuffer, addToSteamName, osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
@@ -2231,6 +2551,62 @@ int main(int argc, char** argv) {
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
                         cancelRename();
                     }
+                } else if (mode == Mode::AddToSteam) {
+                    auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                    clampOskSelection(osk, layout);
+                    int rows = static_cast<int>(layout.size());
+                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                        osk.row = (osk.row + rows - 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
+                        osk.row = (osk.row + 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + cols - 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (!layout.empty() && !layout[osk.row].empty()) {
+                            const OskKey& key = layout[osk.row][osk.col];
+                            if (key.action == OskAction::None) {
+                                appendFiltered(addToSteamName, key.value, false);
+                            } else if (key.action == OskAction::Backspace) {
+                                if (!addToSteamName.empty()) {
+                                    addToSteamName.pop_back();
+                                }
+                            } else if (key.action == OskAction::Clear) {
+                                addToSteamName.clear();
+                            } else if (key.action == OskAction::Ok) {
+                                commitAddToSteam();
+                            } else if (key.action == OskAction::Cancel) {
+                                cancelAddToSteam();
+                            } else if (key.action == OskAction::ToggleShift) {
+                                osk.uppercase = !osk.uppercase;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            } else if (key.action == OskAction::ToggleSymbols) {
+                                osk.symbols = !osk.symbols;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            }
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+                        if (!addToSteamName.empty()) {
+                            addToSteamName.pop_back();
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_Y) {
+                        addToSteamName.clear();
+                    } else if (button == SDL_CONTROLLER_BUTTON_START) {
+                        commitAddToSteam();
+                    } else if (button == SDL_CONTROLLER_BUTTON_B) {
+                        cancelAddToSteam();
+                    }
                 } else if (mode == Mode::AppMenu) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
                         appMenuIndex = (appMenuIndex + static_cast<int>(appMenuOptions.size()) - 1) % static_cast<int>(appMenuOptions.size());
@@ -2277,22 +2653,28 @@ int main(int argc, char** argv) {
                             loadEntries(panes[0], settings, &status);
                             loadEntries(panes[1], settings, &status);
                         } else {
-                            if (option == "FTP Host") {
-                                editField = SettingField::FtpHost;
-                                editBuffer = settings.ftpHost;
-                            } else if (option == "FTP Port") {
-                                editField = SettingField::FtpPort;
-                                editBuffer = std::to_string(settings.ftpPort);
-                            } else if (option == "FTP User") {
-                                editField = SettingField::FtpUser;
-                                editBuffer = settings.ftpUser;
-                            } else if (option == "FTP Password") {
-                                editField = SettingField::FtpPass;
-                                editBuffer = settings.ftpPass;
-                            }
-                            osk = {};
-                            mode = Mode::EditSetting;
-                            SDL_StartTextInput();
+                        if (option == "FTP Host") {
+                            editField = SettingField::FtpHost;
+                            editBuffer = settings.ftpHost;
+                        } else if (option == "FTP Port") {
+                            editField = SettingField::FtpPort;
+                            editBuffer = std::to_string(settings.ftpPort);
+                        } else if (option == "FTP User") {
+                            editField = SettingField::FtpUser;
+                            editBuffer = settings.ftpUser;
+                        } else if (option == "FTP Password") {
+                            editField = SettingField::FtpPass;
+                            editBuffer = settings.ftpPass;
+                        } else if (option == "Steam Launch Options") {
+                            editField = SettingField::SteamLaunchOptions;
+                            editBuffer = settings.steamLaunchOptions;
+                        } else if (option == "Steam Compatibility Tool") {
+                            editField = SettingField::SteamCompatibilityTool;
+                            editBuffer = settings.steamCompatibilityToolVersion;
+                        }
+                        osk = {};
+                        mode = Mode::EditSetting;
+                        SDL_StartTextInput();
                         }
                     }
                 } else if (mode == Mode::EditSetting) {
@@ -2361,6 +2743,12 @@ int main(int argc, char** argv) {
                         if (quitConfirmIndex == 0) {
                             running = false;
                         }
+                        mode = Mode::Browse;
+                    }
+                } else if (mode == Mode::Notice) {
+                    if (button == SDL_CONTROLLER_BUTTON_A ||
+                        button == SDL_CONTROLLER_BUTTON_B ||
+                        button == SDL_CONTROLLER_BUTTON_START) {
                         mode = Mode::Browse;
                     }
                 }
@@ -2486,7 +2874,7 @@ int main(int argc, char** argv) {
             if (mode == Mode::Settings) {
                 modalWidth = static_cast<int>(std::round(520.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(340.0f * uiScale));
-            } else if (mode == Mode::EditSetting || mode == Mode::Rename) {
+            } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::AddToSteam) {
                 modalWidth = static_cast<int>(std::round(520.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
@@ -2505,6 +2893,13 @@ int main(int argc, char** argv) {
             int optionHeight = static_cast<int>(std::round(36.0f * uiScale));
 
             if (mode == Mode::ActionMenu) {
+                auto actionOptions = buildActionOptions(action.entry, panes[action.paneIndex]);
+                if (actionOptions.empty()) {
+                    actionOptions = {"Back"};
+                }
+                if (menuIndex < 0 || menuIndex >= static_cast<int>(actionOptions.size())) {
+                    menuIndex = 0;
+                }
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Actions");
                 for (size_t i = 0; i < actionOptions.size(); ++i) {
                     SDL_Rect optionRect {
@@ -2525,7 +2920,7 @@ int main(int argc, char** argv) {
                 drawText(renderer,
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
-                         smallScale, modalText, "A: Select  B: Back");
+                        smallScale, modalText, "A: Select  B: Back");
             } else if (mode == Mode::ConfirmDelete) {
                 drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Delete this item?");
                 SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};
@@ -2575,6 +2970,43 @@ int main(int argc, char** argv) {
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
                          "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+            } else if (mode == Mode::AddToSteam) {
+                drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
+                drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,
+                         "Pick an app name.");
+
+                SDL_Rect fieldRect {modal.x + padding, modal.y + padding + static_cast<int>(std::round(70.0f * uiScale)),
+                                    modal.w - padding * 2, static_cast<int>(std::round(40.0f * uiScale))};
+                SDL_SetRenderDrawColor(renderer, 25, 30, 35, 255);
+                SDL_RenderFillRect(renderer, &fieldRect);
+                int fieldMaxChars = (fieldRect.w - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
+                drawText(renderer,
+                         fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                         fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
+                         fontScale, modalText, ellipsize(addToSteamName, fieldMaxChars));
+
+                int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
+                SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
+                auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                clampOskSelection(osk, layout);
+                drawOsk(renderer, oskArea, fontScale, uiScale, modalText, layout, osk);
+
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                         smallScale, modalText,
+                         "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Add  B: Cancel");
+            } else if (mode == Mode::Notice) {
+                drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
+                int maxChars = (modal.w - padding * 2) / (8 * fontScale + fontScale);
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + padding + static_cast<int>(std::round(50.0f * uiScale)),
+                         smallScale, modalText, ellipsize(noticeText, maxChars));
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                         smallScale, modalText, "A/B: OK");
             } else if (mode == Mode::AppMenu) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Menu");
                 for (size_t i = 0; i < appMenuOptions.size(); ++i) {
@@ -2620,6 +3052,10 @@ int main(int argc, char** argv) {
                         label += ": " + (settings.ftpUser.empty() ? "(unset)" : settings.ftpUser);
                     } else if (settingsOptions[i] == "FTP Password") {
                         label += ": " + (settings.ftpPass.empty() ? "(unset)" : maskPassword(settings.ftpPass));
+                    } else if (settingsOptions[i] == "Steam Launch Options") {
+                        label += ": " + (settings.steamLaunchOptions.empty() ? "(unset)" : settings.steamLaunchOptions);
+                    } else if (settingsOptions[i] == "Steam Compatibility Tool") {
+                        label += ": " + (settings.steamCompatibilityToolVersion.empty() ? "(unset)" : settings.steamCompatibilityToolVersion);
                     } else if (settingsOptions[i] == "UI Scale") {
                         label += ": " + formatScale(settings.uiScale);
                     } else if (settingsOptions[i] == "Show Hidden") {
@@ -2644,6 +3080,10 @@ int main(int argc, char** argv) {
                     editTitle += "FTP User";
                 } else if (editField == SettingField::FtpPass) {
                     editTitle += "FTP Password";
+                } else if (editField == SettingField::SteamLaunchOptions) {
+                    editTitle += "Steam Launch Options";
+                } else if (editField == SettingField::SteamCompatibilityTool) {
+                    editTitle += "Steam Compatibility Tool";
                 }
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, editTitle);
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)),

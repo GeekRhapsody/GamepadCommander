@@ -2278,6 +2278,8 @@ int main(int argc, char** argv) {
     std::string editBuffer;
     SettingField editField = SettingField::FtpHost;
     TransferState transfer;
+    bool leftTriggerHeld = false;
+    bool rightTriggerHeld = false;
 
     bool running = true;
     TransferContext transferCtx {window, renderer, &settings, &running, &transfer};
@@ -2358,6 +2360,30 @@ int main(int argc, char** argv) {
                 if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) == removedId) {
                     SDL_GameControllerClose(controller);
                     controller = nullptr;
+                }
+            }
+            if (event.type == SDL_CONTROLLERAXISMOTION) {
+                const int pressThreshold = 16000;
+                const int releaseThreshold = 12000;
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+                    if (!leftTriggerHeld && event.caxis.value > pressThreshold) {
+                        leftTriggerHeld = true;
+                        if (mode == Mode::Browse && !panes[activePane].entries.empty()) {
+                            panes[activePane].selected = std::max(0, panes[activePane].selected - 10);
+                        }
+                    } else if (leftTriggerHeld && event.caxis.value < releaseThreshold) {
+                        leftTriggerHeld = false;
+                    }
+                } else if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                    if (!rightTriggerHeld && event.caxis.value > pressThreshold) {
+                        rightTriggerHeld = true;
+                        if (mode == Mode::Browse && !panes[activePane].entries.empty()) {
+                            panes[activePane].selected = std::min(static_cast<int>(panes[activePane].entries.size()) - 1,
+                                                                  panes[activePane].selected + 10);
+                        }
+                    } else if (rightTriggerHeld && event.caxis.value < releaseThreshold) {
+                        rightTriggerHeld = false;
+                    }
                 }
             }
 

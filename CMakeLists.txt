@@ -12,10 +12,10 @@ add_executable(GamepadCommander
 )
 
 if (TARGET SDL2::SDL2)
-    target_link_libraries(GamepadCommander PRIVATE SDL2::SDL2)
     if (TARGET SDL2::SDL2main)
         target_link_libraries(GamepadCommander PRIVATE SDL2::SDL2main)
     endif()
+    target_link_libraries(GamepadCommander PRIVATE SDL2::SDL2)
 else()
     target_include_directories(GamepadCommander PRIVATE ${SDL2_INCLUDE_DIRS})
     target_link_libraries(GamepadCommander PRIVATE ${SDL2_LIBRARIES})

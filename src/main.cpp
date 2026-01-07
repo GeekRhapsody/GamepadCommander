@@ -333,6 +333,18 @@ static std::string toLower(const std::string& text) {
 }
 
 static std::string quoteArg(const std::string& text) {
+#ifdef _WIN32
+    std::string escaped = "\"";
+    for (char ch : text) {
+        if (ch == '"') {
+            escaped += "\\\"";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    escaped += "\"";
+    return escaped;
+#else
     std::string escaped = "\"";
     for (char ch : text) {
         if (ch == '\\' || ch == '"' || ch == '$' || ch == '`') {
@@ -342,10 +354,31 @@ static std::string quoteArg(const std::string& text) {
     }
     escaped += "\"";
     return escaped;
+#endif
 }
 
 static std::string quoteWrappedArg(const std::string& text) {
+#ifdef _WIN32
+    return quoteArg(text);
+#else
     return "'" + quoteArg(text) + "'";
+#endif
+}
+
+static FILE* openPipe(const std::string& command, const char* mode) {
+#ifdef _WIN32
+    return _popen(command.c_str(), mode);
+#else
+    return popen(command.c_str(), mode);
+#endif
+}
+
+static int closePipe(FILE* pipe) {
+#ifdef _WIN32
+    return _pclose(pipe);
+#else
+    return pclose(pipe);
+#endif
 }
 
 static std::string trimWhitespace(const std::string& text) {
@@ -375,6 +408,11 @@ static std::string urlEncodeFilePath(const std::string& text) {
 
 static std::string fileUrlForPath(const fs::path& path) {
     std::string abs = fs::absolute(path).generic_string();
+#ifdef _WIN32
+    if (abs.size() >= 2 && abs[1] == ':') {
+        return "file:///" + urlEncodeFilePath(abs);
+    }
+#endif
     return "file://" + urlEncodeFilePath(abs);
 }
 
@@ -391,12 +429,19 @@ static std::string resolveNonsteamPath() {
     char* basePath = SDL_GetBasePath();
     if (basePath) {
         fs::path candidate = fs::path(basePath) / "nonsteam";
+#ifdef _WIN32
+        candidate += ".exe";
+#endif
         SDL_free(basePath);
         if (fs::exists(candidate)) {
             return candidate.string();
         }
     }
+#ifdef _WIN32
+    return "nonsteam.exe";
+#else
     return "nonsteam";
+#endif
 }
 
 static bool addExeToSteam(const fs::path& exePath,
@@ -699,10 +744,22 @@ static std::string maskPassword(const std::string& pass) {
 }
 
 static fs::path getHomePath() {
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+    if (home && home[0] != '\0') {
+        return fs::path(home);
+    }
+    const char* drive = std::getenv("HOMEDRIVE");
+    const char* path = std::getenv("HOMEPATH");
+    if (drive && path && drive[0] != '\0' && path[0] != '\0') {
+        return fs::path(std::string(drive) + path);
+    }
+#else
     const char* home = std::getenv("HOME");
     if (home && home[0] != '\0') {
         return fs::path(home);
     }
+#endif
     return fs::current_path();
 }
 
@@ -1364,6 +1421,8 @@ static bool ftpDeleteRecursive(const Settings& settings, const std::string& remo
     return ftpDeletePath(settings, remotePath, true, error);
 }
 
+#endif
+
 static bool copyLocalFileWithProgress(const fs::path& src, const fs::path& dst, TransferContext* ctx,
                                       const std::string& title, const std::string& label, bool resetCount,
                                       std::string& error) {
@@ -1482,7 +1541,7 @@ static bool copyLocalPathWithProgress(const fs::path& src, const fs::path& dst, 
 
 static int countZipEntries(const fs::path& zipPath, std::string& error) {
     std::string command = "unzip -Z -1 " + quoteArg(zipPath.string()) + " 2>&1";
-    FILE* pipe = popen(command.c_str(), "r");
+    FILE* pipe = openPipe(command, "r");
     if (!pipe) {
         error = "Failed to run unzip";
         return -1;
@@ -1495,7 +1554,7 @@ static int countZipEntries(const fs::path& zipPath, std::string& error) {
             ++count;
         }
     }
-    int status = pclose(pipe);
+    int status = closePipe(pipe);
     if (status != 0) {
         error = "unzip failed";
         return -1;
@@ -1542,7 +1601,7 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
     }
 
     std::string command = "unzip -o " + quoteArg(zipPath.string()) + " -d " + quoteArg(destDir.string()) + " 2>&1";
-    FILE* pipe = popen(command.c_str(), "r");
+    FILE* pipe = openPipe(command, "r");
     if (!pipe) {
         error = "Failed to run unzip";
         return false;
@@ -1572,7 +1631,7 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
         }
     }
 
-    int status = pclose(pipe);
+    int status = closePipe(pipe);
     if (status != 0) {
         error = lastLine.empty() ? "unzip failed" : "unzip failed: " + lastLine;
         return false;
@@ -1585,7 +1644,7 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
 
 static int countRarEntries(const fs::path& rarPath, std::string& error) {
     std::string command = "unrar lb " + quoteArg(rarPath.string()) + " 2>&1";
-    FILE* pipe = popen(command.c_str(), "r");
+    FILE* pipe = openPipe(command, "r");
     if (!pipe) {
         error = "Failed to run unrar";
         return -1;
@@ -1598,7 +1657,7 @@ static int countRarEntries(const fs::path& rarPath, std::string& error) {
             ++count;
         }
     }
-    int status = pclose(pipe);
+    int status = closePipe(pipe);
     if (status != 0) {
         error = "unrar failed";
         return -1;
@@ -1645,7 +1704,7 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
     }
 
     std::string command = "unrar x -o+ -y " + quoteArg(rarPath.string()) + " " + quoteArg(destDir.string()) + " 2>&1";
-    FILE* pipe = popen(command.c_str(), "r");
+    FILE* pipe = openPipe(command, "r");
     if (!pipe) {
         error = "Failed to run unrar";
         return false;
@@ -1675,7 +1734,7 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
         }
     }
 
-    int status = pclose(pipe);
+    int status = closePipe(pipe);
     if (status != 0) {
         error = lastLine.empty() ? "unrar failed" : "unrar failed: " + lastLine;
         return false;
@@ -1759,7 +1818,6 @@ static bool parseFtpListLine(const std::string& line, Entry& entry) {
     entry.path.clear();
     return !entry.name.empty();
 }
-#endif
 
 static void loadLocalEntries(Pane& pane, const Settings& settings) {
     pane.entries.clear();
@@ -2047,6 +2105,10 @@ static void setStatus(StatusMessage& status, const std::string& text) {
     status.started = std::chrono::steady_clock::now();
 }
 
+static bool supportsAddToSteam() {
+    return true;
+}
+
 static bool isWindowsExe(const Entry& entry, const Pane& pane) {
     if (pane.source != PaneSource::Local) {
         return false;
@@ -2093,7 +2155,7 @@ static std::vector<std::string> buildActionOptions(const Entry& entry, const Pan
     if (isZipArchive(entry, pane) || isRarArchive(entry, pane)) {
         options.insert(options.begin() + 2, "Extract");
     }
-    if (isWindowsExe(entry, pane)) {
+    if (supportsAddToSteam() && isWindowsExe(entry, pane)) {
         options.push_back("Add to Steam");
     }
     return options;

@@ -2,7 +2,7 @@
 
 Gamepad-first, two-pane file manager inspired by Total Commander.
 
-<img src="gamepadcommander_logo_512.png" width="160" />
+<img src="packaging/gamepadcommander_logo_512.png" width="160" />
 
 ## Features
 

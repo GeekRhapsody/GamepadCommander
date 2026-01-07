@@ -2637,6 +2637,11 @@ int main(int argc, char** argv) {
                         panes[activePane].selected = std::max(0, panes[activePane].selected - 1);
                     } else if (key == SDLK_DOWN && hasEntries) {
                         panes[activePane].selected = std::min(static_cast<int>(panes[activePane].entries.size()) - 1, panes[activePane].selected + 1);
+                    } else if (key == SDLK_PAGEUP && hasEntries) {
+                        panes[activePane].selected = std::max(0, panes[activePane].selected - 10);
+                    } else if (key == SDLK_PAGEDOWN && hasEntries) {
+                        panes[activePane].selected = std::min(static_cast<int>(panes[activePane].entries.size()) - 1,
+                                                              panes[activePane].selected + 10);
                     } else if (key == SDLK_RETURN) {
                         enterSelected(panes[activePane], settings, &status);
                     } else if (key == SDLK_BACKSPACE) {

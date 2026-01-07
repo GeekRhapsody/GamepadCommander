@@ -6,6 +6,11 @@ Gamepad-first, two-pane file manager inspired by Total Commander.
     <img src="packaging/gamepadcommander_logo_512.png" width="160" />
 </p>
 
+<p align="center">
+  <img src="packaging/screenshot1.png" width="45%" alt="Screenshot 1" />
+  <img src="packaging/screenshot2.png" width="45%" alt="Screenshot 2" />
+</p>
+
 ## Features
 
 - File management (Copy, Move, Rename and Delete)

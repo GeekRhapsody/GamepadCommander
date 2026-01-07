@@ -2,7 +2,9 @@
 
 Gamepad-first, two-pane file manager inspired by Total Commander.
 
-<img src="packaging/gamepadcommander_logo_512.png" width="160" />
+<p align="center">
+    <img src="packaging/gamepadcommander_logo_512.png" width="160" />
+</p>
 
 ## Features
 
@@ -31,12 +33,16 @@ Gamepad-first, two-pane file manager inspired by Total Commander.
 - X: Open actions menu on a file
 - Esc: Open app menu / close modals
 
-## App Menu
+## Settings
 
-- Settings: Configure FTP host/port/user/password, Steam launch options, UI scale, and show hidden files
-- Connect to FTP: Switch the active pane to the configured FTP site
-- Quit: Exit with confirmation
-
+- FTP Host: Hostname or IP address of the FTP server to browse.
+- FTP Port: Port for the FTP server (default 21).
+- FTP User: Username for the FTP server (blank uses anonymous).
+- FTP Password: Password for the FTP server account.
+- Steam Launch Options: Extra launch arguments applied when adding an EXE to Steam.
+- Steam Compatibility Tool: Steam compatibility tool identifier to use (for example, a Proton version).
+- UI Scale: Scales the interface up or down for different screen sizes.
+- Show Hidden Files: Toggles visibility of dotfiles and other hidden entries.
 
 ## AI Usage Disclaimer
 This project was developed by a human author with the assistance of AI-based tools, including ChatGPT (Codex), which were used to support parts of the coding process.
@@ -46,6 +52,5 @@ Not all code in this repository is AI-generated, and the use of AI should not be
 ## Acknowledgments
 This app uses cameronhimself's nonsteam CLI tool to add Games to Steam: https://github.com/cameronhimself/nonsteam
 
-
-
+## Support
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/X8X51RUF09)

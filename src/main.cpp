@@ -1540,6 +1540,28 @@ static bool copyLocalPathWithProgress(const fs::path& src, const fs::path& dst, 
 }
 
 static int countZipEntries(const fs::path& zipPath, std::string& error) {
+#ifdef _WIN32
+    std::string command = "tar -tf " + quoteArg(zipPath.string()) + " 2>&1";
+    FILE* pipe = openPipe(command, "r");
+    if (!pipe) {
+        error = "Failed to run tar";
+        return -1;
+    }
+    int count = 0;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        std::string line = trimWhitespace(buffer);
+        if (!line.empty() && line.rfind("tar:", 0) != 0 && line.rfind("bsdtar:", 0) != 0) {
+            ++count;
+        }
+    }
+    int status = closePipe(pipe);
+    if (status != 0) {
+        error = "tar failed";
+        return -1;
+    }
+    return count;
+#else
     std::string command = "unzip -Z -1 " + quoteArg(zipPath.string()) + " 2>&1";
     FILE* pipe = openPipe(command, "r");
     if (!pipe) {
@@ -1560,6 +1582,7 @@ static int countZipEntries(const fs::path& zipPath, std::string& error) {
         return -1;
     }
     return count;
+#endif
 }
 
 static bool parseUnzipOutputLine(const std::string& line, std::string& item) {
@@ -1600,10 +1623,18 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
         }
     }
 
+#ifdef _WIN32
+    std::string command = "tar -xf " + quoteArg(zipPath.string()) + " -C " + quoteArg(destDir.string()) + " -v 2>&1";
+#else
     std::string command = "unzip -o " + quoteArg(zipPath.string()) + " -d " + quoteArg(destDir.string()) + " 2>&1";
+#endif
     FILE* pipe = openPipe(command, "r");
     if (!pipe) {
+#ifdef _WIN32
+        error = "Failed to run tar";
+#else
         error = "Failed to run unzip";
+#endif
         return false;
     }
 
@@ -1617,7 +1648,16 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
             lastLine = trimmed;
         }
         std::string item;
+#ifdef _WIN32
+        std::string trimmedItem = trimWhitespace(line);
+        if (trimmedItem.rfind("x ", 0) == 0) {
+            trimmedItem = trimWhitespace(trimmedItem.substr(2));
+        }
+        if (!trimmedItem.empty() && trimmedItem.rfind("tar:", 0) != 0 && trimmedItem.rfind("bsdtar:", 0) != 0) {
+            item = trimmedItem;
+#else
         if (parseUnzipOutputLine(line, item)) {
+#endif
             ++extracted;
             if (ctx && ctx->transfer) {
                 ctx->transfer->item = item;
@@ -1633,7 +1673,11 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
 
     int status = closePipe(pipe);
     if (status != 0) {
+#ifdef _WIN32
+        error = lastLine.empty() ? "tar failed" : "tar failed: " + lastLine;
+#else
         error = lastLine.empty() ? "unzip failed" : "unzip failed: " + lastLine;
+#endif
         return false;
     }
     if (ctx) {
@@ -1643,6 +1687,28 @@ static bool extractZipWithProgress(const fs::path& zipPath, const fs::path& dest
 }
 
 static int countRarEntries(const fs::path& rarPath, std::string& error) {
+#ifdef _WIN32
+    std::string command = "tar -tf " + quoteArg(rarPath.string()) + " 2>&1";
+    FILE* pipe = openPipe(command, "r");
+    if (!pipe) {
+        error = "Failed to run tar";
+        return -1;
+    }
+    int count = 0;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe)) {
+        std::string line = trimWhitespace(buffer);
+        if (!line.empty() && line.rfind("tar:", 0) != 0 && line.rfind("bsdtar:", 0) != 0) {
+            ++count;
+        }
+    }
+    int status = closePipe(pipe);
+    if (status != 0) {
+        error = "tar failed";
+        return -1;
+    }
+    return count;
+#else
     std::string command = "unrar lb " + quoteArg(rarPath.string()) + " 2>&1";
     FILE* pipe = openPipe(command, "r");
     if (!pipe) {
@@ -1663,6 +1729,7 @@ static int countRarEntries(const fs::path& rarPath, std::string& error) {
         return -1;
     }
     return count;
+#endif
 }
 
 static bool parseUnrarOutputLine(const std::string& line, std::string& item) {
@@ -1703,10 +1770,18 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
         }
     }
 
+#ifdef _WIN32
+    std::string command = "tar -xf " + quoteArg(rarPath.string()) + " -C " + quoteArg(destDir.string()) + " -v 2>&1";
+#else
     std::string command = "unrar x -o+ -y " + quoteArg(rarPath.string()) + " " + quoteArg(destDir.string()) + " 2>&1";
+#endif
     FILE* pipe = openPipe(command, "r");
     if (!pipe) {
+#ifdef _WIN32
+        error = "Failed to run tar";
+#else
         error = "Failed to run unrar";
+#endif
         return false;
     }
 
@@ -1720,7 +1795,16 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
             lastLine = trimmed;
         }
         std::string item;
+#ifdef _WIN32
+        std::string trimmedItem = trimWhitespace(line);
+        if (trimmedItem.rfind("x ", 0) == 0) {
+            trimmedItem = trimWhitespace(trimmedItem.substr(2));
+        }
+        if (!trimmedItem.empty() && trimmedItem.rfind("tar:", 0) != 0 && trimmedItem.rfind("bsdtar:", 0) != 0) {
+            item = trimmedItem;
+#else
         if (parseUnrarOutputLine(line, item)) {
+#endif
             ++extracted;
             if (ctx && ctx->transfer) {
                 ctx->transfer->item = item;
@@ -1736,7 +1820,11 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
 
     int status = closePipe(pipe);
     if (status != 0) {
+#ifdef _WIN32
+        error = lastLine.empty() ? "tar failed" : "tar failed: " + lastLine;
+#else
         error = lastLine.empty() ? "unrar failed" : "unrar failed: " + lastLine;
+#endif
         return false;
     }
     if (ctx) {

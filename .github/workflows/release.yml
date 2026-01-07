@@ -17,11 +17,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake g++ libsdl2-dev libcurl4-openssl-dev squashfs-tools
+      - name: Fetch appimagetool
+        run: |
+          mkdir -p .tools
+          curl -L -o .tools/appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x .tools/appimagetool-x86_64.AppImage
       - name: Build AppImage
         run: |
-          chmod +x assets/appimagetool-x86_64.AppImage assets/nonsteam
+          chmod +x assets/nonsteam
           cmake -S . -B build-appimage -DBUILD_APPIMAGE=ON \
-            -DAPPIMAGETOOL="${{ github.workspace }}/assets/appimagetool-x86_64.AppImage" \
+            -DAPPIMAGETOOL="${{ github.workspace }}/.tools/appimagetool-x86_64.AppImage" \
             -DNONSTEAM_TOOL="${{ github.workspace }}/assets/nonsteam" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build-appimage --target appimage
@@ -56,7 +62,7 @@ jobs:
             mingw-w64-x86_64-libiconv
             mingw-w64-x86_64-libidn2
             mingw-w64-x86_64-libpsl
-            mingw-w64-x86_64-libnghttp2
+            mingw-w64-x86_64-nghttp2
       - name: Build
         run: |
           cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release

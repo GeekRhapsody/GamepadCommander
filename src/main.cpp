@@ -2178,6 +2178,7 @@ static void handleActionSelection(int menuIndex,
         renameCursor = renameBuffer.size();
         osk = {};
         mode = Mode::Rename;
+        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
         SDL_StartTextInput();
         return;
     }
@@ -2186,6 +2187,7 @@ static void handleActionSelection(int menuIndex,
         addToSteamCursor = addToSteamName.size();
         osk = {};
         mode = Mode::AddToSteam;
+        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
         SDL_StartTextInput();
         return;
     }
@@ -2830,6 +2832,7 @@ int main(int argc, char** argv) {
                         editCursor = editBuffer.size();
                         osk = {};
                         mode = Mode::EditSetting;
+                        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
                         SDL_StartTextInput();
                         }
                     }
@@ -3119,6 +3122,7 @@ int main(int argc, char** argv) {
                         editCursor = editBuffer.size();
                         osk = {};
                         mode = Mode::EditSetting;
+                        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
                         SDL_StartTextInput();
                         }
                     }

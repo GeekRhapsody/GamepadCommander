@@ -3078,6 +3078,9 @@ int main(int argc, char** argv) {
             } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::AddToSteam) {
                 modalWidth = static_cast<int>(std::round(920.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));
+            } else if (mode == Mode::Notice) {
+                modalWidth = static_cast<int>(std::round(780.0f * uiScale));
+                modalHeight = static_cast<int>(std::round(280.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
                 modalWidth = static_cast<int>(std::round(360.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(240.0f * uiScale));

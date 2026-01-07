@@ -56,6 +56,7 @@ WINDOWS_DLLS=(
     "libidn2-0.dll"
     "libnghttp2-14.dll"
     "libpsl-5.dll"
+    "libssh2-1.dll"
     "libssh2.dll"
     "libssl-3-x64.dll"
     "libssp-0.dll"
@@ -63,6 +64,9 @@ WINDOWS_DLLS=(
     "libzstd.dll"
     "libiconv-2.dll"
     "libunistring-5.dll"
+    "libnghttp3-9.dll"
+    "libngtcp2-16.dll"
+    "libngtcp2_crypto_ossl-0.dll"
 )
 
 for dll in "${WINDOWS_DLLS[@]}"; do

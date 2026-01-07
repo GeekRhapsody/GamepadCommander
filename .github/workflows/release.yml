@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsdl2-dev libcurl4-openssl-dev squashfs-tools
+      - name: Build AppImage
+        run: |
+          chmod +x assets/appimagetool-x86_64.AppImage assets/nonsteam
+          cmake -S . -B build-appimage -DBUILD_APPIMAGE=ON \
+            -DAPPIMAGETOOL="${{ github.workspace }}/assets/appimagetool-x86_64.AppImage" \
+            -DNONSTEAM_TOOL="${{ github.workspace }}/assets/nonsteam" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-appimage --target appimage
+          mv build-appimage/GamepadCommander.AppImage \
+            "GamepadCommander-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: GamepadCommander-${{ github.ref_name }}-linux-x86_64.AppImage
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-curl
+            mingw-w64-x86_64-brotli
+            mingw-w64-x86_64-libssh2
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-libiconv
+            mingw-w64-x86_64-libidn2
+            mingw-w64-x86_64-libpsl
+            mingw-w64-x86_64-libnghttp2
+      - name: Build
+        run: |
+          cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Stage DLLs
+        run: |
+          WINDOWS_EXE_DIR="build" WINDOWS_MINGW_BIN="/mingw64/bin" \
+            ./scripts/stage-windows-dlls.sh
+      - name: Package ZIP
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          New-Item -ItemType Directory -Force -Path dist\\windows | Out-Null
+          Copy-Item build\\GamepadCommander.exe dist\\windows\\
+          Copy-Item build\\*.dll dist\\windows\\
+          Copy-Item assets\\nonsteam.exe dist\\windows\\
+          $zip = "GamepadCommander-$version-windows-x64.zip"
+          Compress-Archive -Path dist\\windows\\* -DestinationPath $zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: GamepadCommander-${{ github.ref_name }}-windows-x64.zip
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-appimage, build-windows]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/linux-appimage/GamepadCommander-${{ github.ref_name }}-linux-x86_64.AppImage
+            dist/windows-zip/GamepadCommander-${{ github.ref_name }}-windows-x64.zip

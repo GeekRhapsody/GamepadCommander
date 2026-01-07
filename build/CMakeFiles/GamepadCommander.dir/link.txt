@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/GamepadCommander.dir/link.d CMakeFiles/GamepadCommander.dir/src/main.cpp.o -o GamepadCommander  /usr/lib/libSDL2-2.0.so.0.3200.60 /usr/lib/libSDL2main.a /usr/lib/libcurl.so /usr/lib/libcurl.so

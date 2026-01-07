@@ -3345,6 +3345,7 @@ int main(int argc, char** argv) {
             SDL_Color modalText {230, 235, 240, 255};
             int padding = static_cast<int>(std::round(20.0f * uiScale));
             int optionHeight = static_cast<int>(std::round(36.0f * uiScale));
+            int helpLineHeight = 8 * smallScale + smallScale;
 
             if (mode == Mode::ActionMenu) {
                 auto actionOptions = buildActionOptions(action.entry, panes[action.paneIndex]);
@@ -3421,9 +3422,14 @@ int main(int argc, char** argv) {
 
                 drawText(renderer,
                          modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)) - helpLineHeight,
+                         smallScale, modalText,
+                         "D-Pad: Move  L1/R1: Cursor  A: Select");
+                drawText(renderer,
+                         modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "D-Pad: Move  L1/R1: Cursor  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::AddToSteam) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,
@@ -3447,9 +3453,14 @@ int main(int argc, char** argv) {
 
                 drawText(renderer,
                          modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)) - helpLineHeight,
+                         smallScale, modalText,
+                         "D-Pad: Move  L1/R1: Cursor  A: Select");
+                drawText(renderer,
+                         modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "D-Pad: Move  L1/R1: Cursor  A: Select  X: Backspace  Y: Clear  Start: Add  B: Cancel");
+                         "X: Backspace  Y: Clear  Start: Add  B: Cancel");
             } else if (mode == Mode::Notice) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
                 int maxChars = (modal.w - padding * 2) / (8 * fontScale + fontScale);
@@ -3562,9 +3573,14 @@ int main(int argc, char** argv) {
 
                 drawText(renderer,
                          modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)) - helpLineHeight,
+                         smallScale, modalText,
+                         "D-Pad: Move  L1/R1: Cursor  A: Select");
+                drawText(renderer,
+                         modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "D-Pad: Move  L1/R1: Cursor  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::ConfirmQuit) {
                 drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Quit GamepadCommander?");
                 SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};

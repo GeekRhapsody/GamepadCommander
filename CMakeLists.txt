@@ -11,6 +11,16 @@ add_executable(GamepadCommander
     src/main.cpp
 )
 
+if (WIN32)
+    set(WINDOWS_ICON_RC "${CMAKE_BINARY_DIR}/GamepadCommander.rc")
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/packaging/GamepadCommander.rc.in"
+        "${WINDOWS_ICON_RC}"
+        @ONLY
+    )
+    target_sources(GamepadCommander PRIVATE "${WINDOWS_ICON_RC}")
+endif()
+
 if (TARGET SDL2::SDL2)
     if (TARGET SDL2::SDL2main)
         target_link_libraries(GamepadCommander PRIVATE SDL2::SDL2main)

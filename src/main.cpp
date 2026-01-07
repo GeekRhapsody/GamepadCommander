@@ -479,13 +479,59 @@ static int textWidth(int scale, const std::string& text) {
     return static_cast<int>(text.size()) * advance;
 }
 
-static void appendFiltered(std::string& buffer, const std::string& input, bool digitsOnly) {
+static void insertFiltered(std::string& buffer, size_t& cursor, const std::string& input, bool digitsOnly) {
+    if (cursor > buffer.size()) {
+        cursor = buffer.size();
+    }
     for (char ch : input) {
         if (digitsOnly && !std::isdigit(static_cast<unsigned char>(ch))) {
             continue;
         }
-        buffer.push_back(ch);
+        buffer.insert(buffer.begin() + static_cast<std::string::difference_type>(cursor), ch);
+        ++cursor;
     }
+}
+
+static void backspaceAtCursor(std::string& buffer, size_t& cursor) {
+    if (cursor == 0 || buffer.empty()) {
+        return;
+    }
+    if (cursor > buffer.size()) {
+        cursor = buffer.size();
+    }
+    buffer.erase(buffer.begin() + static_cast<std::string::difference_type>(cursor - 1));
+    --cursor;
+}
+
+static void drawInputText(SDL_Renderer* renderer, int x, int y, int scale, SDL_Color color,
+                          const std::string& text, size_t cursor, int maxChars) {
+    if (maxChars <= 0) {
+        return;
+    }
+    std::string safe = sanitizeLabel(text);
+    if (cursor > safe.size()) {
+        cursor = safe.size();
+    }
+    int start = 0;
+    if (static_cast<int>(safe.size()) > maxChars) {
+        int cursorPos = static_cast<int>(cursor);
+        if (cursorPos > start + maxChars) {
+            start = cursorPos - maxChars;
+        }
+        int maxStart = static_cast<int>(safe.size()) - maxChars;
+        start = std::clamp(start, 0, maxStart);
+    }
+    int count = std::min(maxChars, static_cast<int>(safe.size()) - start);
+    std::string visible = safe.substr(static_cast<size_t>(start), static_cast<size_t>(count));
+    drawText(renderer, x, y, scale, color, visible);
+
+    const int advance = 8 * scale + scale;
+    int cursorOffset = static_cast<int>(cursor) - start;
+    cursorOffset = std::clamp(cursorOffset, 0, count);
+    int cursorX = x + cursorOffset * advance;
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_Rect caret {cursorX, y, std::max(1, scale), 8 * scale};
+    SDL_RenderFillRect(renderer, &caret);
 }
 
 static OskKey makeActionKey(const std::string& label, OskAction action) {
@@ -2107,7 +2153,9 @@ static void handleActionSelection(int menuIndex,
                                   Mode& mode,
                                   int& confirmIndex,
                                   std::string& renameBuffer,
+                                  size_t& renameCursor,
                                   std::string& addToSteamName,
+                                  size_t& addToSteamCursor,
                                   OskState& osk,
                                   TransferContext* transferCtx) {
     auto options = buildActionOptions(action.entry, panes[action.paneIndex]);
@@ -2127,6 +2175,7 @@ static void handleActionSelection(int menuIndex,
     }
     if (option == "Rename") {
         renameBuffer = action.entry.name;
+        renameCursor = renameBuffer.size();
         osk = {};
         mode = Mode::Rename;
         SDL_StartTextInput();
@@ -2134,6 +2183,7 @@ static void handleActionSelection(int menuIndex,
     }
     if (option == "Add to Steam") {
         addToSteamName = defaultSteamAppName(action.entry);
+        addToSteamCursor = addToSteamName.size();
         osk = {};
         mode = Mode::AddToSteam;
         SDL_StartTextInput();
@@ -2479,9 +2529,12 @@ int main(int argc, char** argv) {
 
     std::string renameBuffer;
     std::string addToSteamName;
+    size_t renameCursor = 0;
+    size_t addToSteamCursor = 0;
     std::string noticeText;
     OskState osk;
     std::string editBuffer;
+    size_t editCursor = 0;
     SettingField editField = SettingField::FtpHost;
     TransferState transfer;
     bool leftTriggerHeld = false;
@@ -2597,16 +2650,12 @@ int main(int argc, char** argv) {
                 (mode == Mode::Rename || mode == Mode::EditSetting || mode == Mode::AddToSteam)) {
                 std::string input = event.text.text;
                 if (mode == Mode::Rename) {
-                    renameBuffer += input;
+                    insertFiltered(renameBuffer, renameCursor, input, false);
                 } else if (mode == Mode::AddToSteam) {
-                    addToSteamName += input;
+                    insertFiltered(addToSteamName, addToSteamCursor, input, false);
                 } else {
-                    for (char ch : input) {
-                        if (editField == SettingField::FtpPort && !std::isdigit(static_cast<unsigned char>(ch))) {
-                            continue;
-                        }
-                        editBuffer.push_back(ch);
-                    }
+                    bool digitsOnly = (editField == SettingField::FtpPort);
+                    insertFiltered(editBuffer, editCursor, input, digitsOnly);
                 }
             }
 
@@ -2671,7 +2720,8 @@ int main(int argc, char** argv) {
                         menuIndex = (menuIndex + 1) % static_cast<int>(actionOptions.size());
                     } else if (key == SDLK_RETURN) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, addToSteamName, osk, &transferCtx);
+                                             confirmIndex, renameBuffer, renameCursor, addToSteamName, addToSteamCursor,
+                                             osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
@@ -2689,14 +2739,30 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     }
                 } else if (mode == Mode::Rename) {
-                    if (key == SDLK_BACKSPACE && !renameBuffer.empty()) {
-                        renameBuffer.pop_back();
+                    if (key == SDLK_LEFT) {
+                        if (renameCursor > 0) {
+                            --renameCursor;
+                        }
+                    } else if (key == SDLK_RIGHT) {
+                        if (renameCursor < renameBuffer.size()) {
+                            ++renameCursor;
+                        }
+                    } else if (key == SDLK_BACKSPACE) {
+                        backspaceAtCursor(renameBuffer, renameCursor);
                     } else if (key == SDLK_RETURN) {
                         commitRename();
                     }
                 } else if (mode == Mode::AddToSteam) {
-                    if (key == SDLK_BACKSPACE && !addToSteamName.empty()) {
-                        addToSteamName.pop_back();
+                    if (key == SDLK_LEFT) {
+                        if (addToSteamCursor > 0) {
+                            --addToSteamCursor;
+                        }
+                    } else if (key == SDLK_RIGHT) {
+                        if (addToSteamCursor < addToSteamName.size()) {
+                            ++addToSteamCursor;
+                        }
+                    } else if (key == SDLK_BACKSPACE) {
+                        backspaceAtCursor(addToSteamName, addToSteamCursor);
                     } else if (key == SDLK_RETURN) {
                         commitAddToSteam();
                     }
@@ -2761,14 +2827,23 @@ int main(int argc, char** argv) {
                             editField = SettingField::SteamCompatibilityTool;
                             editBuffer = settings.steamCompatibilityToolVersion;
                         }
+                        editCursor = editBuffer.size();
                         osk = {};
                         mode = Mode::EditSetting;
                         SDL_StartTextInput();
                         }
                     }
                 } else if (mode == Mode::EditSetting) {
-                    if (key == SDLK_BACKSPACE && !editBuffer.empty()) {
-                        editBuffer.pop_back();
+                    if (key == SDLK_LEFT) {
+                        if (editCursor > 0) {
+                            --editCursor;
+                        }
+                    } else if (key == SDLK_RIGHT) {
+                        if (editCursor < editBuffer.size()) {
+                            ++editCursor;
+                        }
+                    } else if (key == SDLK_BACKSPACE) {
+                        backspaceAtCursor(editBuffer, editCursor);
                     } else if (key == SDLK_RETURN) {
                         commitEdit();
                     }
@@ -2832,7 +2907,8 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     } else if (button == SDL_CONTROLLER_BUTTON_A) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, addToSteamName, osk, &transferCtx);
+                                             confirmIndex, renameBuffer, renameCursor, addToSteamName, addToSteamCursor,
+                                             osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
@@ -2855,7 +2931,15 @@ int main(int argc, char** argv) {
                     auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
                     clampOskSelection(osk, layout);
                     int rows = static_cast<int>(layout.size());
-                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                    if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+                        if (renameCursor > 0) {
+                            --renameCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                        if (renameCursor < renameBuffer.size()) {
+                            ++renameCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
                         osk.row = (osk.row + rows - 1) % rows;
                         osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
                     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
@@ -2875,13 +2959,12 @@ int main(int argc, char** argv) {
                         if (!layout.empty() && !layout[osk.row].empty()) {
                             const OskKey& key = layout[osk.row][osk.col];
                             if (key.action == OskAction::None) {
-                                appendFiltered(renameBuffer, key.value, false);
+                                insertFiltered(renameBuffer, renameCursor, key.value, false);
                             } else if (key.action == OskAction::Backspace) {
-                                if (!renameBuffer.empty()) {
-                                    renameBuffer.pop_back();
-                                }
+                                backspaceAtCursor(renameBuffer, renameCursor);
                             } else if (key.action == OskAction::Clear) {
                                 renameBuffer.clear();
+                                renameCursor = 0;
                             } else if (key.action == OskAction::Ok) {
                                 commitRename();
                             } else if (key.action == OskAction::Cancel) {
@@ -2897,11 +2980,10 @@ int main(int argc, char** argv) {
                             }
                         }
                     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-                        if (!renameBuffer.empty()) {
-                            renameBuffer.pop_back();
-                        }
+                        backspaceAtCursor(renameBuffer, renameCursor);
                     } else if (button == SDL_CONTROLLER_BUTTON_Y) {
                         renameBuffer.clear();
+                        renameCursor = 0;
                     } else if (button == SDL_CONTROLLER_BUTTON_START) {
                         commitRename();
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
@@ -2911,7 +2993,15 @@ int main(int argc, char** argv) {
                     auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
                     clampOskSelection(osk, layout);
                     int rows = static_cast<int>(layout.size());
-                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                    if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+                        if (addToSteamCursor > 0) {
+                            --addToSteamCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                        if (addToSteamCursor < addToSteamName.size()) {
+                            ++addToSteamCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
                         osk.row = (osk.row + rows - 1) % rows;
                         osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
                     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
@@ -2931,13 +3021,12 @@ int main(int argc, char** argv) {
                         if (!layout.empty() && !layout[osk.row].empty()) {
                             const OskKey& key = layout[osk.row][osk.col];
                             if (key.action == OskAction::None) {
-                                appendFiltered(addToSteamName, key.value, false);
+                                insertFiltered(addToSteamName, addToSteamCursor, key.value, false);
                             } else if (key.action == OskAction::Backspace) {
-                                if (!addToSteamName.empty()) {
-                                    addToSteamName.pop_back();
-                                }
+                                backspaceAtCursor(addToSteamName, addToSteamCursor);
                             } else if (key.action == OskAction::Clear) {
                                 addToSteamName.clear();
+                                addToSteamCursor = 0;
                             } else if (key.action == OskAction::Ok) {
                                 commitAddToSteam();
                             } else if (key.action == OskAction::Cancel) {
@@ -2953,11 +3042,10 @@ int main(int argc, char** argv) {
                             }
                         }
                     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-                        if (!addToSteamName.empty()) {
-                            addToSteamName.pop_back();
-                        }
+                        backspaceAtCursor(addToSteamName, addToSteamCursor);
                     } else if (button == SDL_CONTROLLER_BUTTON_Y) {
                         addToSteamName.clear();
+                        addToSteamCursor = 0;
                     } else if (button == SDL_CONTROLLER_BUTTON_START) {
                         commitAddToSteam();
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
@@ -3028,6 +3116,7 @@ int main(int argc, char** argv) {
                             editField = SettingField::SteamCompatibilityTool;
                             editBuffer = settings.steamCompatibilityToolVersion;
                         }
+                        editCursor = editBuffer.size();
                         osk = {};
                         mode = Mode::EditSetting;
                         SDL_StartTextInput();
@@ -3038,7 +3127,15 @@ int main(int argc, char** argv) {
                     auto layout = buildOskLayout(osk.uppercase, osk.symbols, numeric);
                     clampOskSelection(osk, layout);
                     int rows = static_cast<int>(layout.size());
-                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                    if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+                        if (editCursor > 0) {
+                            --editCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                        if (editCursor < editBuffer.size()) {
+                            ++editCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
                         osk.row = (osk.row + rows - 1) % rows;
                         osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
                     } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
@@ -3058,13 +3155,12 @@ int main(int argc, char** argv) {
                         if (!layout.empty() && !layout[osk.row].empty()) {
                             const OskKey& key = layout[osk.row][osk.col];
                             if (key.action == OskAction::None) {
-                                appendFiltered(editBuffer, key.value, numeric);
+                                insertFiltered(editBuffer, editCursor, key.value, numeric);
                             } else if (key.action == OskAction::Backspace) {
-                                if (!editBuffer.empty()) {
-                                    editBuffer.pop_back();
-                                }
+                                backspaceAtCursor(editBuffer, editCursor);
                             } else if (key.action == OskAction::Clear) {
                                 editBuffer.clear();
+                                editCursor = 0;
                             } else if (key.action == OskAction::Ok) {
                                 commitEdit();
                             } else if (key.action == OskAction::Cancel) {
@@ -3080,11 +3176,10 @@ int main(int argc, char** argv) {
                             }
                         }
                     } else if (button == SDL_CONTROLLER_BUTTON_X) {
-                        if (!editBuffer.empty()) {
-                            editBuffer.pop_back();
-                        }
+                        backspaceAtCursor(editBuffer, editCursor);
                     } else if (button == SDL_CONTROLLER_BUTTON_Y) {
                         editBuffer.clear();
+                        editCursor = 0;
                     } else if (button == SDL_CONTROLLER_BUTTON_START) {
                         commitEdit();
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
@@ -3313,10 +3408,10 @@ int main(int argc, char** argv) {
                 SDL_SetRenderDrawColor(renderer, 25, 30, 35, 255);
                 SDL_RenderFillRect(renderer, &fieldRect);
                 int fieldMaxChars = (fieldRect.w - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
-                drawText(renderer,
-                         fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
-                         fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
-                         fontScale, modalText, ellipsize(renameBuffer, fieldMaxChars));
+                drawInputText(renderer,
+                              fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                              fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
+                              fontScale, modalText, renameBuffer, renameCursor, fieldMaxChars);
 
                 int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
                 SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
@@ -3328,7 +3423,7 @@ int main(int argc, char** argv) {
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "D-Pad: Move  L1/R1: Cursor  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::AddToSteam) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,
@@ -3339,10 +3434,10 @@ int main(int argc, char** argv) {
                 SDL_SetRenderDrawColor(renderer, 25, 30, 35, 255);
                 SDL_RenderFillRect(renderer, &fieldRect);
                 int fieldMaxChars = (fieldRect.w - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
-                drawText(renderer,
-                         fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
-                         fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
-                         fontScale, modalText, ellipsize(addToSteamName, fieldMaxChars));
+                drawInputText(renderer,
+                              fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                              fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
+                              fontScale, modalText, addToSteamName, addToSteamCursor, fieldMaxChars);
 
                 int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
                 SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
@@ -3354,7 +3449,7 @@ int main(int argc, char** argv) {
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Add  B: Cancel");
+                         "D-Pad: Move  L1/R1: Cursor  A: Select  X: Backspace  Y: Clear  Start: Add  B: Cancel");
             } else if (mode == Mode::Notice) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
                 int maxChars = (modal.w - padding * 2) / (8 * fontScale + fontScale);
@@ -3453,10 +3548,10 @@ int main(int argc, char** argv) {
                 SDL_SetRenderDrawColor(renderer, 25, 30, 35, 255);
                 SDL_RenderFillRect(renderer, &fieldRect);
                 int fieldMaxChars = (fieldRect.w - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
-                drawText(renderer,
-                         fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
-                         fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
-                         fontScale, modalText, ellipsize(editBuffer, fieldMaxChars));
+                drawInputText(renderer,
+                              fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                              fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
+                              fontScale, modalText, editBuffer, editCursor, fieldMaxChars);
 
                 int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
                 SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
@@ -3469,7 +3564,7 @@ int main(int argc, char** argv) {
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
-                         "D-Pad: Move  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
+                         "D-Pad: Move  L1/R1: Cursor  A: Select  X: Backspace  Y: Clear  Start: Save  B: Cancel");
             } else if (mode == Mode::ConfirmQuit) {
                 drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Quit GamepadCommander?");
                 SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};

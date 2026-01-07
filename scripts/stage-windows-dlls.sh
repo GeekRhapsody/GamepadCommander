@@ -67,6 +67,7 @@ WINDOWS_DLLS=(
     "libnghttp3-9.dll"
     "libngtcp2-16.dll"
     "libngtcp2_crypto_ossl-0.dll"
+    "libintl-8.dll"
 )
 
 for dll in "${WINDOWS_DLLS[@]}"; do

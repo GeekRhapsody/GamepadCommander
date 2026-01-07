@@ -2,6 +2,14 @@
 
 Gamepad-first, two-pane file manager inspired by Total Commander.
 
+## Features
+
+- File management (Copy, Move, Rename and Delete)
+- Open files
+- Extract compressed files
+- FTP Client
+- Adding of Apps/Games to Steam
+
 ## Controls (Gamepad)
 
 - D-Pad Up/Down: Move selection
@@ -35,5 +43,7 @@ Not all code in this repository is AI-generated, and the use of AI should not be
 
 ## Acknowledgments
 This app uses cameronhimself's nonsteam CLI tool to add Games to Steam: https://github.com/cameronhimself/nonsteam
+
+
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/X8X51RUF09)

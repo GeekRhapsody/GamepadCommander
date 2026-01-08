@@ -13,6 +13,8 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef USE_CURL
@@ -2491,12 +2493,22 @@ int main(int argc, char** argv) {
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 
-    SDL_GameController* controller = nullptr;
+    std::unordered_map<SDL_JoystickID, SDL_GameController*> controllers;
     for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-        if (SDL_IsGameController(i)) {
-            controller = SDL_GameControllerOpen(i);
-            break;
+        if (!SDL_IsGameController(i)) {
+            continue;
         }
+        SDL_GameController* controller = SDL_GameControllerOpen(i);
+        if (!controller) {
+            continue;
+        }
+        SDL_Joystick* joystick = SDL_GameControllerGetJoystick(controller);
+        SDL_JoystickID instanceId = joystick ? SDL_JoystickInstanceID(joystick) : -1;
+        if (instanceId == -1 || controllers.find(instanceId) != controllers.end()) {
+            SDL_GameControllerClose(controller);
+            continue;
+        }
+        controllers.emplace(instanceId, controller);
     }
 
     Pane panes[2];
@@ -2539,8 +2551,8 @@ int main(int argc, char** argv) {
     size_t editCursor = 0;
     SettingField editField = SettingField::FtpHost;
     TransferState transfer;
-    bool leftTriggerHeld = false;
-    bool rightTriggerHeld = false;
+    std::unordered_set<SDL_JoystickID> leftTriggerHeld;
+    std::unordered_set<SDL_JoystickID> rightTriggerHeld;
 
     bool running = true;
     TransferContext transferCtx {window, renderer, &settings, &running, &transfer};
@@ -2611,39 +2623,54 @@ int main(int argc, char** argv) {
                 running = false;
                 break;
             }
-            if (event.type == SDL_CONTROLLERDEVICEADDED && !controller) {
+            if (event.type == SDL_CONTROLLERDEVICEADDED) {
                 if (SDL_IsGameController(event.cdevice.which)) {
-                    controller = SDL_GameControllerOpen(event.cdevice.which);
+                    SDL_GameController* added = SDL_GameControllerOpen(event.cdevice.which);
+                    if (added) {
+                        SDL_Joystick* joystick = SDL_GameControllerGetJoystick(added);
+                        SDL_JoystickID instanceId = joystick ? SDL_JoystickInstanceID(joystick) : -1;
+                        if (instanceId == -1 || controllers.find(instanceId) != controllers.end()) {
+                            SDL_GameControllerClose(added);
+                        } else {
+                            controllers.emplace(instanceId, added);
+                        }
+                    }
                 }
             }
-            if (event.type == SDL_CONTROLLERDEVICEREMOVED && controller) {
+            if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
                 SDL_JoystickID removedId = event.cdevice.which;
-                if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)) == removedId) {
-                    SDL_GameControllerClose(controller);
-                    controller = nullptr;
+                auto it = controllers.find(removedId);
+                if (it != controllers.end()) {
+                    SDL_GameControllerClose(it->second);
+                    controllers.erase(it);
                 }
+                leftTriggerHeld.erase(removedId);
+                rightTriggerHeld.erase(removedId);
             }
             if (event.type == SDL_CONTROLLERAXISMOTION) {
                 const int pressThreshold = 16000;
                 const int releaseThreshold = 12000;
+                SDL_JoystickID instanceId = event.caxis.which;
                 if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
-                    if (!leftTriggerHeld && event.caxis.value > pressThreshold) {
-                        leftTriggerHeld = true;
-                        if (mode == Mode::Browse && !panes[activePane].entries.empty()) {
-                            panes[activePane].selected = std::max(0, panes[activePane].selected - 10);
+                    if (event.caxis.value > pressThreshold) {
+                        if (leftTriggerHeld.insert(instanceId).second) {
+                            if (mode == Mode::Browse && !panes[activePane].entries.empty()) {
+                                panes[activePane].selected = std::max(0, panes[activePane].selected - 10);
+                            }
                         }
-                    } else if (leftTriggerHeld && event.caxis.value < releaseThreshold) {
-                        leftTriggerHeld = false;
+                    } else if (event.caxis.value < releaseThreshold) {
+                        leftTriggerHeld.erase(instanceId);
                     }
                 } else if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
-                    if (!rightTriggerHeld && event.caxis.value > pressThreshold) {
-                        rightTriggerHeld = true;
-                        if (mode == Mode::Browse && !panes[activePane].entries.empty()) {
-                            panes[activePane].selected = std::min(static_cast<int>(panes[activePane].entries.size()) - 1,
-                                                                  panes[activePane].selected + 10);
+                    if (event.caxis.value > pressThreshold) {
+                        if (rightTriggerHeld.insert(instanceId).second) {
+                            if (mode == Mode::Browse && !panes[activePane].entries.empty()) {
+                                panes[activePane].selected = std::min(static_cast<int>(panes[activePane].entries.size()) - 1,
+                                                                      panes[activePane].selected + 10);
+                            }
                         }
-                    } else if (rightTriggerHeld && event.caxis.value < releaseThreshold) {
-                        rightTriggerHeld = false;
+                    } else if (event.caxis.value < releaseThreshold) {
+                        rightTriggerHeld.erase(instanceId);
                     }
                 }
             }
@@ -3627,9 +3654,10 @@ int main(int argc, char** argv) {
     curl_global_cleanup();
 #endif
 
-    if (controller) {
-        SDL_GameControllerClose(controller);
+    for (auto& entry : controllers) {
+        SDL_GameControllerClose(entry.second);
     }
+    controllers.clear();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

@@ -3339,13 +3339,6 @@ int main(int argc, char** argv) {
                  fontScale, footerText,
                  "L1/R1: Active Pane  X: Actions  A: Enter  B: Up  Select: Menu");
 
-        if (statusActive(status)) {
-            drawText(renderer,
-                     footerRect.x + static_cast<int>(std::round(10.0f * uiScale)),
-                     footerRect.y + static_cast<int>(std::round(22.0f * uiScale)),
-                     smallScale, SDL_Color{240, 200, 120, 255}, status.text);
-        }
-
         if (mode != Mode::Browse) {
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
             SDL_Rect overlay {0, 0, width, height};
@@ -3636,6 +3629,32 @@ int main(int argc, char** argv) {
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText, "A: Confirm  B: Cancel");
             }
+        }
+
+        if (statusActive(status)) {
+            int notificationScale = fontScale + 1;
+            int paddingX = std::max(4, static_cast<int>(std::round(8.0f * uiScale)));
+            int paddingY = std::max(4, static_cast<int>(std::round(6.0f * uiScale)));
+            int advance = 8 * notificationScale + notificationScale;
+            int maxWidth = std::max(1, width - margin * 2 - paddingX * 2);
+            int maxChars = std::max(1, maxWidth / advance);
+            std::string display = ellipsize(status.text, maxChars);
+            int textW = textWidth(notificationScale, display);
+            int textH = 8 * notificationScale;
+            SDL_Rect badge {
+                std::max(margin, width - margin - textW - paddingX * 2),
+                margin,
+                textW + paddingX * 2,
+                textH + paddingY * 2
+            };
+            SDL_SetRenderDrawColor(renderer, 20, 30, 35, 255);
+            SDL_RenderFillRect(renderer, &badge);
+            drawText(renderer,
+                     badge.x + paddingX,
+                     badge.y + paddingY,
+                     notificationScale,
+                     SDL_Color{240, 200, 120, 255},
+                     display);
         }
 
         SDL_RenderPresent(renderer);

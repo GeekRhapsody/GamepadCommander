@@ -17,7 +17,7 @@ Gamepad-first, two-pane file manager inspired by Total Commander.
 - Open files
 - Extract compressed files
 - FTP Client
-- Adding of Apps/Games to Steam
+- Adding of Apps/Games to Steam (Steam needs to be restarted for the game to show)
 
 ## Controls (Gamepad)
 
@@ -27,7 +27,6 @@ Gamepad-first, two-pane file manager inspired by Total Commander.
 - X: Open actions menu on a file
 - L1 / R1: Switch active pane
 - Select: Open app menu (Settings, Connect to FTP, Quit)
-- Start: Confirm rename
 
 ## Controls (Keyboard)
 

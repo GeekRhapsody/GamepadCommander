@@ -183,7 +183,6 @@ enum class Mode {
     ConfirmDelete,
     Rename,
     AddToSteam,
-    Notice,
     AppMenu,
     Settings,
     EditSetting,
@@ -2545,7 +2544,6 @@ int main(int argc, char** argv) {
     std::string addToSteamName;
     size_t renameCursor = 0;
     size_t addToSteamCursor = 0;
-    std::string noticeText;
     OskState osk;
     std::string editBuffer;
     size_t editCursor = 0;
@@ -2578,11 +2576,11 @@ int main(int argc, char** argv) {
             std::string error;
             if (addExeToSteam(action.entry.path, addToSteamName, settings.steamLaunchOptions,
                               settings.steamCompatibilityToolVersion, error)) {
-                noticeText = "Added to Steam: " + addToSteamName;
+                setStatus(status, "Added to Steam: " + addToSteamName);
             } else {
-                noticeText = "Add to Steam failed: " + error;
+                setStatus(status, "Add to Steam failed: " + error);
             }
-            mode = Mode::Notice;
+            mode = Mode::Browse;
             SDL_StopTextInput();
         };
         auto cancelAddToSteam = [&]() {
@@ -2698,8 +2696,6 @@ int main(int argc, char** argv) {
                         cancelEdit();
                     } else if (mode == Mode::AddToSteam) {
                         cancelAddToSteam();
-                    } else if (mode == Mode::Notice) {
-                        mode = Mode::Browse;
                     } else if (mode == Mode::Rename) {
                         cancelRename();
                     } else if (mode == Mode::Settings) {
@@ -2884,10 +2880,6 @@ int main(int argc, char** argv) {
                         if (quitConfirmIndex == 0) {
                             running = false;
                         }
-                        mode = Mode::Browse;
-                    }
-                } else if (mode == Mode::Notice) {
-                    if (key == SDLK_RETURN || key == SDLK_SPACE) {
                         mode = Mode::Browse;
                     }
                 }
@@ -3227,12 +3219,6 @@ int main(int argc, char** argv) {
                         }
                         mode = Mode::Browse;
                     }
-                } else if (mode == Mode::Notice) {
-                    if (button == SDL_CONTROLLER_BUTTON_A ||
-                        button == SDL_CONTROLLER_BUTTON_B ||
-                        button == SDL_CONTROLLER_BUTTON_START) {
-                        mode = Mode::Browse;
-                    }
                 }
             }
         }
@@ -3352,9 +3338,6 @@ int main(int argc, char** argv) {
             } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::AddToSteam) {
                 modalWidth = static_cast<int>(std::round(920.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));
-            } else if (mode == Mode::Notice) {
-                modalWidth = static_cast<int>(std::round(780.0f * uiScale));
-                modalHeight = static_cast<int>(std::round(280.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
                 modalWidth = static_cast<int>(std::round(360.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(240.0f * uiScale));
@@ -3485,17 +3468,6 @@ int main(int argc, char** argv) {
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
                          "X: Backspace  Y: Clear  Start: Add  B: Cancel");
-            } else if (mode == Mode::Notice) {
-                drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
-                int maxChars = (modal.w - padding * 2) / (8 * fontScale + fontScale);
-                drawText(renderer,
-                         modal.x + padding,
-                         modal.y + padding + static_cast<int>(std::round(50.0f * uiScale)),
-                         smallScale, modalText, ellipsize(noticeText, maxChars));
-                drawText(renderer,
-                         modal.x + padding,
-                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
-                         smallScale, modalText, "A/B: OK");
             } else if (mode == Mode::AppMenu) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Menu");
                 for (size_t i = 0; i < appMenuOptions.size(); ++i) {

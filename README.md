@@ -1,6 +1,6 @@
 # GamepadCommander
 
-Gamepad-first, two-pane file manager inspired by Total Commander.
+Gamepad-first, two-pane file manager inspired by Total Commander. Built for devices like the Steam Deck, ROG Ally, and Legion Go, where traditional desktop file managers are painful to use without docking.
 
 <p align="center">
     <img src="packaging/gamepadcommander_logo_512.png" width="160" />

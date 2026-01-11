@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -324,12 +326,339 @@ std::optional<uint32_t> generateUniqueAppId(const std::unordered_set<uint32_t>& 
     }
     return std::nullopt;
 }
+
+struct VdfToken {
+    enum class Type { String, LBrace, RBrace };
+    Type type;
+    std::string value;
+    size_t start = 0;
+    size_t end = 0;
+};
+
+struct VdfObject;
+
+struct VdfEntry {
+    std::string key;
+    size_t keyStart = 0;
+    size_t keyEnd = 0;
+    size_t valueStart = 0;
+    size_t valueEnd = 0;
+    std::string stringValue;
+    std::unique_ptr<VdfObject> objectValue;
+};
+
+struct VdfObject {
+    size_t braceStart = std::string::npos;
+    size_t braceEnd = std::string::npos;
+    std::vector<VdfEntry> entries;
+};
+
+bool isWhitespace(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+std::string escapeVdfString(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char ch : value) {
+        if (ch == '\\' || ch == '"') {
+            out.push_back('\\');
+        }
+        out.push_back(ch);
+    }
+    return out;
+}
+
+std::string getLineIndent(const std::string& text, size_t pos) {
+    if (text.empty()) {
+        return {};
+    }
+    size_t lineStart = text.rfind('\n', pos);
+    if (lineStart == std::string::npos) {
+        lineStart = 0;
+    } else {
+        lineStart += 1;
+    }
+    if (lineStart < text.size() && text[lineStart] == '\r') {
+        ++lineStart;
+    }
+    size_t i = lineStart;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) {
+        ++i;
+    }
+    return text.substr(lineStart, i - lineStart);
+}
+
+std::string detectIndentUnit(const std::string& baseIndent) {
+    if (baseIndent.find('\t') != std::string::npos) {
+        return "\t";
+    }
+    return "    ";
+}
+
+bool tokenizeVdf(const std::string& text, std::vector<VdfToken>& tokens, std::string& error) {
+    tokens.clear();
+    size_t i = 0;
+    while (i < text.size()) {
+        char ch = text[i];
+        if (isWhitespace(ch)) {
+            ++i;
+            continue;
+        }
+        if (ch == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+            i += 2;
+            while (i < text.size() && text[i] != '\n') {
+                ++i;
+            }
+            continue;
+        }
+        if (ch == '{') {
+            tokens.push_back({VdfToken::Type::LBrace, {}, i, i + 1});
+            ++i;
+            continue;
+        }
+        if (ch == '}') {
+            tokens.push_back({VdfToken::Type::RBrace, {}, i, i + 1});
+            ++i;
+            continue;
+        }
+        if (ch == '"') {
+            size_t start = i;
+            ++i;
+            std::string value;
+            while (i < text.size()) {
+                char current = text[i];
+                if (current == '\\' && i + 1 < text.size()) {
+                    value.push_back(text[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if (current == '"') {
+                    ++i;
+                    tokens.push_back({VdfToken::Type::String, value, start, i});
+                    break;
+                }
+                value.push_back(current);
+                ++i;
+            }
+            if (tokens.empty() || tokens.back().start != start) {
+                error = "Unterminated string in config.vdf";
+                return false;
+            }
+            continue;
+        }
+        error = "Unexpected token in config.vdf";
+        return false;
+    }
+    return true;
+}
+
+bool parseObjectTokens(const std::vector<VdfToken>& tokens, size_t& index, VdfObject& out, std::string& error) {
+    while (index < tokens.size()) {
+        const auto& token = tokens[index];
+        if (token.type == VdfToken::Type::RBrace) {
+            out.braceEnd = token.start;
+            ++index;
+            return true;
+        }
+        if (token.type != VdfToken::Type::String) {
+            error = "Malformed config.vdf";
+            return false;
+        }
+        VdfEntry entry;
+        entry.key = token.value;
+        entry.keyStart = token.start;
+        entry.keyEnd = token.end;
+        ++index;
+        if (index >= tokens.size()) {
+            error = "Malformed config.vdf";
+            return false;
+        }
+        if (tokens[index].type == VdfToken::Type::String) {
+            entry.stringValue = tokens[index].value;
+            entry.valueStart = tokens[index].start;
+            entry.valueEnd = tokens[index].end;
+            ++index;
+        } else if (tokens[index].type == VdfToken::Type::LBrace) {
+            entry.valueStart = tokens[index].start;
+            auto child = std::make_unique<VdfObject>();
+            child->braceStart = tokens[index].start;
+            ++index;
+            if (!parseObjectTokens(tokens, index, *child, error)) {
+                return false;
+            }
+            entry.valueEnd = child->braceEnd;
+            entry.objectValue = std::move(child);
+        } else {
+            error = "Malformed config.vdf";
+            return false;
+        }
+        out.entries.push_back(std::move(entry));
+    }
+    return true;
+}
+
+bool parseRootTokens(const std::vector<VdfToken>& tokens, VdfObject& out, std::string& error) {
+    size_t index = 0;
+    while (index < tokens.size()) {
+        const auto& token = tokens[index];
+        if (token.type != VdfToken::Type::String) {
+            error = "Malformed config.vdf";
+            return false;
+        }
+        VdfEntry entry;
+        entry.key = token.value;
+        entry.keyStart = token.start;
+        entry.keyEnd = token.end;
+        ++index;
+        if (index >= tokens.size()) {
+            error = "Malformed config.vdf";
+            return false;
+        }
+        if (tokens[index].type == VdfToken::Type::String) {
+            entry.stringValue = tokens[index].value;
+            entry.valueStart = tokens[index].start;
+            entry.valueEnd = tokens[index].end;
+            ++index;
+        } else if (tokens[index].type == VdfToken::Type::LBrace) {
+            entry.valueStart = tokens[index].start;
+            auto child = std::make_unique<VdfObject>();
+            child->braceStart = tokens[index].start;
+            ++index;
+            if (!parseObjectTokens(tokens, index, *child, error)) {
+                return false;
+            }
+            entry.valueEnd = child->braceEnd;
+            entry.objectValue = std::move(child);
+        } else {
+            error = "Malformed config.vdf";
+            return false;
+        }
+        out.entries.push_back(std::move(entry));
+    }
+    return true;
+}
+
+VdfEntry* findEntry(VdfObject& obj, const std::string& key, bool caseSensitive = true) {
+    for (auto& entry : obj.entries) {
+        if (caseSensitive) {
+            if (entry.key == key) {
+                return &entry;
+            }
+        } else {
+            if (entry.key.size() == key.size() &&
+                std::equal(entry.key.begin(), entry.key.end(), key.begin(),
+                           [](char a, char b) {
+                               return std::tolower(static_cast<unsigned char>(a)) ==
+                                      std::tolower(static_cast<unsigned char>(b));
+                           })) {
+                return &entry;
+            }
+        }
+    }
+    return nullptr;
+}
+
+std::string detectNewline(const std::string& text) {
+    if (text.find("\r\n") != std::string::npos) {
+        return "\r\n";
+    }
+    return "\n";
+}
+
+std::vector<fs::path> steamConfigCandidates() {
+    std::vector<fs::path> candidates;
+#ifdef _WIN32
+    return candidates;
+#else
+    fs::path home = getHomePath();
+    std::vector<fs::path> roots = {
+        home / ".local/share/Steam",
+        home / ".steam/root",
+        home / ".steam/steam",
+        home / ".steam/debian-installation"
+    };
+    std::vector<fs::path> uniqueRoots;
+    for (const auto& root : roots) {
+        std::error_code ec;
+        fs::path real = fs::weakly_canonical(root, ec);
+        fs::path resolved = ec ? root : real;
+        if (std::find(uniqueRoots.begin(), uniqueRoots.end(), resolved) == uniqueRoots.end()) {
+            uniqueRoots.push_back(resolved);
+        }
+    }
+    for (const auto& root : uniqueRoots) {
+        candidates.push_back(root / "config" / "config.vdf");
+    }
+    candidates.push_back(home / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/config.vdf");
+    candidates.push_back(home / "snap/steam/common/.steam/root/config/config.vdf");
+    candidates.push_back(home / "steam/.steam/config/config.vdf");
+    return candidates;
+#endif
+}
+
+fs::path findConfigVdfPath(std::string& error) {
+    for (const auto& candidate : steamConfigCandidates()) {
+        if (!candidate.empty() && fs::exists(candidate)) {
+            return candidate;
+        }
+    }
+    error = "Steam config.vdf not found";
+    return {};
+}
+
+bool replaceNameValue(std::string& text, const VdfEntry& nameEntry, const std::string& toolName) {
+    if (nameEntry.valueEnd <= nameEntry.valueStart || nameEntry.valueEnd > text.size()) {
+        return false;
+    }
+    std::string replacement = "\"" + escapeVdfString(toolName) + "\"";
+    text.replace(nameEntry.valueStart, nameEntry.valueEnd - nameEntry.valueStart, replacement);
+    return true;
+}
+
+std::string buildCompatEntryBlock(const std::string& appId,
+                                  const std::string& toolName,
+                                  const std::string& entryIndent,
+                                  const std::string& fieldIndent,
+                                  const std::string& newline) {
+    std::string block;
+    block += entryIndent + "\"" + appId + "\"" + newline;
+    block += entryIndent + "{" + newline;
+    block += fieldIndent + "\"name\" \"" + escapeVdfString(toolName) + "\"" + newline;
+    block += fieldIndent + "\"config\" \"\"" + newline;
+    block += fieldIndent + "\"priority\" \"250\"" + newline;
+    block += entryIndent + "}" + newline;
+    return block;
+}
+
+std::string buildCompatMappingBlock(const std::string& appId,
+                                    const std::string& toolName,
+                                    const std::string& steamEntryIndent,
+                                    const std::string& entryIndent,
+                                    const std::string& fieldIndent,
+                                    const std::string& newline) {
+    std::string block;
+    block += steamEntryIndent + "\"CompatToolMapping\"" + newline;
+    block += steamEntryIndent + "{" + newline;
+    block += buildCompatEntryBlock(appId, toolName, entryIndent, fieldIndent, newline);
+    block += steamEntryIndent + "}" + newline;
+    return block;
+}
+
+bool insertBefore(std::string& text, size_t pos, const std::string& insertion) {
+    if (pos > text.size()) {
+        return false;
+    }
+    text.insert(pos, insertion);
+    return true;
+}
 } // namespace
 
 bool addShortcutToSteam(const fs::path& exePath,
                         const fs::path& startDir,
                         const std::string& appName,
                         const std::string& launchOptions,
+                        std::uint32_t& appId,
                         std::string& error) {
     if (appName.empty()) {
         error = "App name is required";
@@ -364,6 +693,7 @@ bool addShortcutToSteam(const fs::path& exePath,
         error = "Failed to generate unique app ID";
         return false;
     }
+    appId = *newAppId;
 
     fs::path absExe = fs::absolute(exePath);
     fs::path absStart = startDir.empty() ? absExe.parent_path() : fs::absolute(startDir);
@@ -376,5 +706,154 @@ bool addShortcutToSteam(const fs::path& exePath,
         return false;
     }
 
+    return true;
+}
+
+bool setSteamCompatToolMapping(std::uint32_t appId, const std::string& toolName, std::string& error) {
+    if (toolName.empty()) {
+        return true;
+    }
+    fs::path configPath = findConfigVdfPath(error);
+    if (configPath.empty()) {
+        return false;
+    }
+
+    std::ifstream file(configPath);
+    if (!file) {
+        error = "Failed to open config.vdf";
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    std::vector<VdfToken> tokens;
+    if (!tokenizeVdf(text, tokens, error)) {
+        return false;
+    }
+    VdfObject root;
+    if (!parseRootTokens(tokens, root, error)) {
+        return false;
+    }
+
+    VdfEntry* install = findEntry(root, "InstallConfigStore");
+    if (!install || !install->objectValue) {
+        error = "InstallConfigStore not found";
+        return false;
+    }
+    VdfEntry* software = findEntry(*install->objectValue, "Software");
+    if (!software || !software->objectValue) {
+        error = "Software section not found";
+        return false;
+    }
+    VdfEntry* valve = findEntry(*software->objectValue, "Valve");
+    if (!valve || !valve->objectValue) {
+        valve = findEntry(*software->objectValue, "valve");
+    }
+    if (!valve || !valve->objectValue) {
+        error = "Valve section not found";
+        return false;
+    }
+    VdfEntry* steam = findEntry(*valve->objectValue, "Steam");
+    if (!steam || !steam->objectValue) {
+        error = "Steam section not found";
+        return false;
+    }
+
+    std::string newline = detectNewline(text);
+    std::string appIdText = std::to_string(appId);
+
+    VdfEntry* compat = findEntry(*steam->objectValue, "CompatToolMapping");
+    if (compat && compat->objectValue) {
+        VdfEntry* mappingEntry = findEntry(*compat->objectValue, appIdText);
+        if (mappingEntry && mappingEntry->objectValue) {
+            VdfEntry* nameEntry = findEntry(*mappingEntry->objectValue, "name");
+            if (nameEntry && nameEntry->valueEnd > nameEntry->valueStart) {
+                if (!replaceNameValue(text, *nameEntry, toolName)) {
+                    error = "Failed to update compatibility tool";
+                    return false;
+                }
+            } else {
+                std::string entryIndent = getLineIndent(text, mappingEntry->keyStart);
+                std::string fieldIndent;
+                if (!mappingEntry->objectValue->entries.empty()) {
+                    fieldIndent = getLineIndent(text, mappingEntry->objectValue->entries.front().keyStart);
+                } else {
+                    fieldIndent = entryIndent + detectIndentUnit(entryIndent);
+                }
+                std::string insertion;
+                if (mappingEntry->objectValue->braceEnd > 0 &&
+                    text[mappingEntry->objectValue->braceEnd - 1] != '\n' &&
+                    text[mappingEntry->objectValue->braceEnd - 1] != '\r') {
+                    insertion += newline;
+                }
+                insertion += fieldIndent + "\"name\" \"" + escapeVdfString(toolName) + "\"" + newline;
+                if (!insertBefore(text, mappingEntry->objectValue->braceEnd, insertion)) {
+                    error = "Failed to update compatibility tool";
+                    return false;
+                }
+            }
+        } else {
+            std::string mappingIndent = getLineIndent(text, compat->keyStart);
+            std::string entryIndent;
+            std::string fieldIndent;
+            if (!compat->objectValue->entries.empty()) {
+                entryIndent = getLineIndent(text, compat->objectValue->entries.front().keyStart);
+                if (!compat->objectValue->entries.front().objectValue ||
+                    compat->objectValue->entries.front().objectValue->entries.empty()) {
+                    fieldIndent = entryIndent + detectIndentUnit(entryIndent);
+                } else {
+                    fieldIndent = getLineIndent(text, compat->objectValue->entries.front().objectValue->entries.front().keyStart);
+                }
+            } else {
+                std::string indentUnit = detectIndentUnit(mappingIndent);
+                entryIndent = mappingIndent + indentUnit;
+                fieldIndent = entryIndent + indentUnit;
+            }
+            std::string insertion;
+            if (compat->objectValue->braceEnd > 0 &&
+                text[compat->objectValue->braceEnd - 1] != '\n' &&
+                text[compat->objectValue->braceEnd - 1] != '\r') {
+                insertion += newline;
+            }
+            insertion += buildCompatEntryBlock(appIdText, toolName, entryIndent, fieldIndent, newline);
+            if (!insertBefore(text, compat->objectValue->braceEnd, insertion)) {
+                error = "Failed to update compatibility tool";
+                return false;
+            }
+        }
+    } else {
+        std::string steamEntryIndent;
+        std::string entryIndent;
+        std::string fieldIndent;
+        if (!steam->objectValue->entries.empty()) {
+            steamEntryIndent = getLineIndent(text, steam->objectValue->entries.front().keyStart);
+            std::string indentUnit = detectIndentUnit(steamEntryIndent);
+            entryIndent = steamEntryIndent + indentUnit;
+            fieldIndent = entryIndent + indentUnit;
+        } else {
+            std::string steamIndent = getLineIndent(text, steam->keyStart);
+            std::string indentUnit = detectIndentUnit(steamIndent);
+            steamEntryIndent = steamIndent + indentUnit;
+            entryIndent = steamEntryIndent + indentUnit;
+            fieldIndent = entryIndent + indentUnit;
+        }
+        std::string insertion;
+        if (steam->objectValue->braceEnd > 0 &&
+            text[steam->objectValue->braceEnd - 1] != '\n' &&
+            text[steam->objectValue->braceEnd - 1] != '\r') {
+            insertion += newline;
+        }
+        insertion += buildCompatMappingBlock(appIdText, toolName, steamEntryIndent, entryIndent, fieldIndent, newline);
+        if (!insertBefore(text, steam->objectValue->braceEnd, insertion)) {
+            error = "Failed to update compatibility tool";
+            return false;
+        }
+    }
+
+    std::ofstream out(configPath, std::ios::trunc);
+    if (!out) {
+        error = "Failed to write config.vdf";
+        return false;
+    }
+    out << text;
     return true;
 }

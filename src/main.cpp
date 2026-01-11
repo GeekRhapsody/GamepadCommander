@@ -427,10 +427,19 @@ static bool addExeToSteam(const fs::path& exePath,
                           const std::string& launchOptions,
                           const std::string& compatibilityToolVersion,
                           std::string& error) {
-    (void)compatibilityToolVersion;
     fs::path absExe = fs::absolute(exePath);
     fs::path startDir = absExe.parent_path();
-    return addShortcutToSteam(absExe, startDir, appName, launchOptions, error);
+    std::uint32_t appId = 0;
+    if (!addShortcutToSteam(absExe, startDir, appName, launchOptions, appId, error)) {
+        return false;
+    }
+    if (!compatibilityToolVersion.empty()) {
+        std::string compatError;
+        if (!setSteamCompatToolMapping(appId, compatibilityToolVersion, compatError)) {
+            error = compatError;
+        }
+    }
+    return true;
 }
 
 static int textWidth(int scale, const std::string& text) {
@@ -2637,7 +2646,11 @@ int main(int argc, char** argv) {
             std::string error;
             if (addExeToSteam(action.entry.path, addToSteamName, settings.steamLaunchOptions,
                               settings.steamCompatibilityToolVersion, error)) {
-                setStatus(status, "Added to Steam: " + addToSteamName);
+                if (!error.empty()) {
+                    setStatus(status, "Added to Steam, but: " + error);
+                } else {
+                    setStatus(status, "Added to Steam: " + addToSteamName);
+                }
             } else {
                 setStatus(status, "Add to Steam failed: " + error);
             }

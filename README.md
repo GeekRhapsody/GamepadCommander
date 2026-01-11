@@ -54,4 +54,4 @@ This project was developed by a human author with the assistance of AI-based too
 Not all code in this repository is AI-generated, and the use of AI should not be interpreted as diminishing human authorship, or oversight for this project.
 
 ## Acknowledgments
-This app uses cameronhimself's nonsteam CLI tool to add Games to Steam: https://github.com/cameronhimself/nonsteam
+The Add to Steam functionality in this app is based on cameronhimself's nonsteam CLI tool: https://github.com/cameronhimself/nonsteam

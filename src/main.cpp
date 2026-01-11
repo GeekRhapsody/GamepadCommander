@@ -3493,6 +3493,8 @@ int main(int argc, char** argv) {
             if (mode == Mode::Settings) {
                 modalWidth = static_cast<int>(std::round(780.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(440.0f * uiScale));
+            } else if (mode == Mode::ActionMenu) {
+                modalHeight = static_cast<int>(std::round(330.0f * uiScale));
             } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::AddToSteam) {
                 modalWidth = static_cast<int>(std::round(920.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));

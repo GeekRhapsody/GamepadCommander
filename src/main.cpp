@@ -182,6 +182,7 @@ enum class Mode {
     ActionMenu,
     ConfirmDelete,
     Rename,
+    CreateFolder,
     AddToSteam,
     AppMenu,
     Settings,
@@ -2123,6 +2124,45 @@ static bool renameInPane(const Pane& pane, const Entry& entry, const Settings& s
 #endif
 }
 
+static bool createDirInPane(const Pane& pane, const Settings& settings, const std::string& name, std::string& error) {
+    if (pane.source == PaneSource::Local) {
+        if (name.empty()) {
+            error = "Folder name required";
+            return false;
+        }
+        fs::path target = pane.cwd / name;
+        if (fs::exists(target)) {
+            error = "Target already exists";
+            return false;
+        }
+        std::error_code ec;
+        if (!fs::create_directory(target, ec) || ec) {
+            error = ec ? ec.message() : "Failed to create folder";
+            return false;
+        }
+        return true;
+    }
+#ifdef USE_CURL
+    if (name.empty()) {
+        error = "Folder name required";
+        return false;
+    }
+    bool isDir = false;
+    if (ftpEntryExists(settings, pane.ftpPath, name, isDir, error)) {
+        error = "Target already exists";
+        return false;
+    }
+    if (!error.empty()) {
+        return false;
+    }
+    std::string remotePath = ftpJoinPath(pane.ftpPath, name);
+    return ftpCreateDir(settings, remotePath, error);
+#else
+    error = "FTP create not supported";
+    return false;
+#endif
+}
+
 static bool moveBetweenPanes(const Entry& entry, const Pane& src, const Pane& dst, const Settings& settings,
                              TransferContext* ctx, const std::string& title, std::string& error) {
     if (src.source == PaneSource::Local && dst.source == PaneSource::Local) {
@@ -2162,6 +2202,8 @@ static void handleActionSelection(int menuIndex,
                                   int& confirmIndex,
                                   std::string& renameBuffer,
                                   size_t& renameCursor,
+                                  std::string& createFolderName,
+                                  size_t& createFolderCursor,
                                   std::string& addToSteamName,
                                   size_t& addToSteamCursor,
                                   OskState& osk,
@@ -2186,6 +2228,15 @@ static void handleActionSelection(int menuIndex,
         renameCursor = renameBuffer.size();
         osk = {};
         mode = Mode::Rename;
+        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
+        SDL_StartTextInput();
+        return;
+    }
+    if (option == "Create New Folder") {
+        createFolderName = "New Folder";
+        createFolderCursor = createFolderName.size();
+        osk = {};
+        mode = Mode::CreateFolder;
         SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
         SDL_StartTextInput();
         return;
@@ -2321,7 +2372,7 @@ static std::string defaultSteamAppName(const Entry& entry) {
 }
 
 static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane) {
-    std::vector<std::string> options = {"Copy", "Move", "Delete", "Rename"};
+    std::vector<std::string> options = {"Copy", "Move", "Delete", "Rename", "Create New Folder"};
     if (isZipArchive(entry, pane) || isRarArchive(entry, pane)) {
         options.insert(options.begin() + 2, "Extract");
     }
@@ -2576,8 +2627,10 @@ int main(int argc, char** argv) {
                                                         "Back"};
 
     std::string renameBuffer;
+    std::string createFolderName;
     std::string addToSteamName;
     size_t renameCursor = 0;
+    size_t createFolderCursor = 0;
     size_t addToSteamCursor = 0;
     OskState osk;
     std::string editBuffer;
@@ -2604,6 +2657,23 @@ int main(int argc, char** argv) {
             SDL_StopTextInput();
         };
         auto cancelRename = [&]() {
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
+        auto commitCreateFolder = [&]() {
+            std::string error;
+            if (createFolderName.empty()) {
+                setStatus(status, "Folder name required");
+            } else if (createDirInPane(panes[action.paneIndex], settings, createFolderName, error)) {
+                setStatus(status, "Folder created");
+                loadEntries(panes[action.paneIndex], settings, &status);
+            } else {
+                setStatus(status, "Create folder failed: " + error);
+            }
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
+        auto cancelCreateFolder = [&]() {
             mode = Mode::Browse;
             SDL_StopTextInput();
         };
@@ -2709,10 +2779,12 @@ int main(int argc, char** argv) {
             }
 
             if (event.type == SDL_TEXTINPUT &&
-                (mode == Mode::Rename || mode == Mode::EditSetting || mode == Mode::AddToSteam)) {
+                (mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::EditSetting || mode == Mode::AddToSteam)) {
                 std::string input = event.text.text;
                 if (mode == Mode::Rename) {
                     insertFiltered(renameBuffer, renameCursor, input, false);
+                } else if (mode == Mode::CreateFolder) {
+                    insertFiltered(createFolderName, createFolderCursor, input, false);
                 } else if (mode == Mode::AddToSteam) {
                     insertFiltered(addToSteamName, addToSteamCursor, input, false);
                 } else {
@@ -2731,6 +2803,8 @@ int main(int argc, char** argv) {
                         cancelEdit();
                     } else if (mode == Mode::AddToSteam) {
                         cancelAddToSteam();
+                    } else if (mode == Mode::CreateFolder) {
+                        cancelCreateFolder();
                     } else if (mode == Mode::Rename) {
                         cancelRename();
                     } else if (mode == Mode::Settings) {
@@ -2780,7 +2854,9 @@ int main(int argc, char** argv) {
                         menuIndex = (menuIndex + 1) % static_cast<int>(actionOptions.size());
                     } else if (key == SDLK_RETURN) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, renameCursor, addToSteamName, addToSteamCursor,
+                                             confirmIndex, renameBuffer, renameCursor,
+                                             createFolderName, createFolderCursor,
+                                             addToSteamName, addToSteamCursor,
                                              osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
@@ -2811,6 +2887,20 @@ int main(int argc, char** argv) {
                         backspaceAtCursor(renameBuffer, renameCursor);
                     } else if (key == SDLK_RETURN) {
                         commitRename();
+                    }
+                } else if (mode == Mode::CreateFolder) {
+                    if (key == SDLK_LEFT) {
+                        if (createFolderCursor > 0) {
+                            --createFolderCursor;
+                        }
+                    } else if (key == SDLK_RIGHT) {
+                        if (createFolderCursor < createFolderName.size()) {
+                            ++createFolderCursor;
+                        }
+                    } else if (key == SDLK_BACKSPACE) {
+                        backspaceAtCursor(createFolderName, createFolderCursor);
+                    } else if (key == SDLK_RETURN) {
+                        commitCreateFolder();
                     }
                 } else if (mode == Mode::AddToSteam) {
                     if (key == SDLK_LEFT) {
@@ -2964,7 +3054,9 @@ int main(int argc, char** argv) {
                         mode = Mode::Browse;
                     } else if (button == SDL_CONTROLLER_BUTTON_A) {
                         handleActionSelection(menuIndex, action, panes, settings, status, mode,
-                                             confirmIndex, renameBuffer, renameCursor, addToSteamName, addToSteamCursor,
+                                             confirmIndex, renameBuffer, renameCursor,
+                                             createFolderName, createFolderCursor,
+                                             addToSteamName, addToSteamCursor,
                                              osk, &transferCtx);
                     }
                 } else if (mode == Mode::ConfirmDelete) {
@@ -3045,6 +3137,68 @@ int main(int argc, char** argv) {
                         commitRename();
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
                         cancelRename();
+                    }
+                } else if (mode == Mode::CreateFolder) {
+                    auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                    clampOskSelection(osk, layout);
+                    int rows = static_cast<int>(layout.size());
+                    if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+                        if (createFolderCursor > 0) {
+                            --createFolderCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                        if (createFolderCursor < createFolderName.size()) {
+                            ++createFolderCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                        osk.row = (osk.row + rows - 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
+                        osk.row = (osk.row + 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + cols - 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (!layout.empty() && !layout[osk.row].empty()) {
+                            const OskKey& key = layout[osk.row][osk.col];
+                            if (key.action == OskAction::None) {
+                                insertFiltered(createFolderName, createFolderCursor, key.value, false);
+                            } else if (key.action == OskAction::Backspace) {
+                                backspaceAtCursor(createFolderName, createFolderCursor);
+                            } else if (key.action == OskAction::Clear) {
+                                createFolderName.clear();
+                                createFolderCursor = 0;
+                            } else if (key.action == OskAction::Ok) {
+                                commitCreateFolder();
+                            } else if (key.action == OskAction::Cancel) {
+                                cancelCreateFolder();
+                            } else if (key.action == OskAction::ToggleShift) {
+                                osk.uppercase = !osk.uppercase;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            } else if (key.action == OskAction::ToggleSymbols) {
+                                osk.symbols = !osk.symbols;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            }
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+                        backspaceAtCursor(createFolderName, createFolderCursor);
+                    } else if (button == SDL_CONTROLLER_BUTTON_Y) {
+                        createFolderName.clear();
+                        createFolderCursor = 0;
+                    } else if (button == SDL_CONTROLLER_BUTTON_START) {
+                        commitCreateFolder();
+                    } else if (button == SDL_CONTROLLER_BUTTON_B) {
+                        cancelCreateFolder();
                     }
                 } else if (mode == Mode::AddToSteam) {
                     auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
@@ -3370,7 +3524,7 @@ int main(int argc, char** argv) {
             if (mode == Mode::Settings) {
                 modalWidth = static_cast<int>(std::round(780.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(440.0f * uiScale));
-            } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::AddToSteam) {
+            } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::AddToSteam) {
                 modalWidth = static_cast<int>(std::round(920.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
@@ -3472,6 +3626,37 @@ int main(int argc, char** argv) {
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
                          "X: Backspace  Y: Clear  Start: Save  B: Cancel");
+            } else if (mode == Mode::CreateFolder) {
+                drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Create New Folder");
+                drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,
+                         "Pick a folder name.");
+
+                SDL_Rect fieldRect {modal.x + padding, modal.y + padding + static_cast<int>(std::round(70.0f * uiScale)),
+                                    modal.w - padding * 2, static_cast<int>(std::round(40.0f * uiScale))};
+                SDL_SetRenderDrawColor(renderer, 25, 30, 35, 255);
+                SDL_RenderFillRect(renderer, &fieldRect);
+                int fieldMaxChars = (fieldRect.w - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
+                drawInputText(renderer,
+                              fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                              fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
+                              fontScale, modalText, createFolderName, createFolderCursor, fieldMaxChars);
+
+                int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
+                SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
+                auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                clampOskSelection(osk, layout);
+                drawOsk(renderer, oskArea, fontScale, uiScale, modalText, layout, osk);
+
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)) - helpLineHeight,
+                         smallScale, modalText,
+                         "D-Pad: Move  L1/R1: Cursor  A: Select");
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                         smallScale, modalText,
+                         "X: Backspace  Y: Clear  Start: Create  B: Cancel");
             } else if (mode == Mode::AddToSteam) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Steam");
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,

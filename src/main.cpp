@@ -209,6 +209,7 @@ static bool isZipArchive(const Entry& entry, const Pane& pane);
 static bool isRarArchive(const Entry& entry, const Pane& pane);
 static std::string defaultSteamAppName(const Entry& entry);
 static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane);
+static void resetPanePosition(Pane& pane);
 
 struct Settings {
     std::string ftpHost;
@@ -2031,6 +2032,11 @@ static void loadEntries(Pane& pane, const Settings& settings, StatusMessage* sta
     }
 }
 
+static void resetPanePosition(Pane& pane) {
+    pane.selected = 0;
+    pane.scroll = 0;
+}
+
 static void connectToFtp(Pane& pane, const Settings& settings, StatusMessage& status) {
     if (settings.ftpHost.empty()) {
         setStatus(status, "FTP host not set");
@@ -2038,6 +2044,7 @@ static void connectToFtp(Pane& pane, const Settings& settings, StatusMessage& st
     }
     pane.source = PaneSource::Ftp;
     pane.ftpPath = "/";
+    resetPanePosition(pane);
     loadEntries(pane, settings, &status);
 }
 
@@ -2390,11 +2397,13 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
     if (pane.source == PaneSource::Ftp) {
         if (entry.isParent) {
             pane.ftpPath = ftpParentPath(pane.ftpPath);
+            resetPanePosition(pane);
             loadEntries(pane, settings, status);
             return;
         }
         if (entry.isDir) {
             pane.ftpPath = ftpJoinPath(pane.ftpPath, entry.name);
+            resetPanePosition(pane);
             loadEntries(pane, settings, status);
         } else if (status) {
             setStatus(*status, "Open not supported on FTP");
@@ -2404,11 +2413,13 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
 
     if (entry.isParent) {
         pane.cwd = entry.path;
+        resetPanePosition(pane);
         loadEntries(pane, settings, status);
         return;
     }
     if (entry.isDir) {
         pane.cwd = entry.path;
+        resetPanePosition(pane);
         loadEntries(pane, settings, status);
         return;
     }
@@ -2425,11 +2436,13 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
 static void goUp(Pane& pane, const Settings& settings, StatusMessage* status) {
     if (pane.source == PaneSource::Ftp) {
         pane.ftpPath = ftpParentPath(pane.ftpPath);
+        resetPanePosition(pane);
         loadEntries(pane, settings, status);
         return;
     }
     if (pane.cwd.has_parent_path()) {
         pane.cwd = pane.cwd.parent_path();
+        resetPanePosition(pane);
         loadEntries(pane, settings, status);
     }
 }

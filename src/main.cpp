@@ -21,6 +21,8 @@
 #include <curl/curl.h>
 #endif
 
+#include "SteamHelper.h"
+
 namespace fs = std::filesystem;
 
 // Public domain 8x8 font from https://github.com/dhepper/font8x8
@@ -360,14 +362,6 @@ static std::string quoteArg(const std::string& text) {
 #endif
 }
 
-static std::string quoteWrappedArg(const std::string& text) {
-#ifdef _WIN32
-    return quoteArg(text);
-#else
-    return "'" + quoteArg(text) + "'";
-#endif
-}
-
 static FILE* openPipe(const std::string& command, const char* mode) {
 #ifdef _WIN32
     return _popen(command.c_str(), mode);
@@ -428,53 +422,15 @@ static bool openLocalFile(const fs::path& path, std::string& error) {
     return true;
 }
 
-static std::string resolveNonsteamPath() {
-    char* basePath = SDL_GetBasePath();
-    if (basePath) {
-        fs::path candidate = fs::path(basePath) / "nonsteam";
-#ifdef _WIN32
-        candidate += ".exe";
-#endif
-        SDL_free(basePath);
-        if (fs::exists(candidate)) {
-            return candidate.string();
-        }
-    }
-#ifdef _WIN32
-    return "nonsteam.exe";
-#else
-    return "nonsteam";
-#endif
-}
-
 static bool addExeToSteam(const fs::path& exePath,
                           const std::string& appName,
                           const std::string& launchOptions,
                           const std::string& compatibilityToolVersion,
                           std::string& error) {
-    if (appName.empty()) {
-        error = "App name is required";
-        return false;
-    }
+    (void)compatibilityToolVersion;
     fs::path absExe = fs::absolute(exePath);
     fs::path startDir = absExe.parent_path();
-    std::string exeArg = absExe.string();
-    std::string dirArg = startDir.string();
-    std::string nonsteam = resolveNonsteamPath();
-    std::string command = quoteArg(nonsteam) + " add -w --exe " + quoteWrappedArg(exeArg) +
-                          " --start-dir " + quoteWrappedArg(dirArg) +
-                          " --app-name " + quoteArg(appName) +
-                          " --launch-options " + quoteArg(launchOptions);
-    // if (!compatibilityToolVersion.empty()) {
-    //     command += " --compatibility-tool-version " + quoteArg(compatibilityToolVersion);
-    // }
-    SDL_Log("nonsteam command: %s", command.c_str());
-    int result = std::system(command.c_str());
-    if (result != 0) {
-        error = "nonsteam failed";
-        return false;
-    }
-    return true;
+    return addShortcutToSteam(absExe, startDir, appName, launchOptions, error);
 }
 
 static int textWidth(int scale, const std::string& text) {

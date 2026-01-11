@@ -9,6 +9,7 @@ find_package(CURL)
 
 add_executable(GamepadCommander
     src/main.cpp
+    src/SteamHelper.cpp
 )
 
 if (WIN32)
@@ -47,10 +48,6 @@ if (UNIX AND NOT APPLE)
     if (NOT APPIMAGETOOL)
         find_program(APPIMAGETOOL appimagetool)
     endif()
-    set(NONSTEAM_TOOL "" CACHE FILEPATH "Path to nonsteam")
-    if (NOT NONSTEAM_TOOL)
-        find_program(NONSTEAM_TOOL nonsteam)
-    endif()
     if (APPIMAGETOOL)
         string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" APPIMAGE_ARCH)
         if (APPIMAGE_ARCH STREQUAL "amd64")
@@ -61,12 +58,6 @@ if (UNIX AND NOT APPLE)
 
         set(APPIMAGE_APPDIR "${CMAKE_BINARY_DIR}/AppDir")
         set(APPIMAGE_OUTPUT "${CMAKE_BINARY_DIR}/GamepadCommander.AppImage")
-
-        if (BUILD_APPIMAGE AND NOT NONSTEAM_TOOL)
-            message(FATAL_ERROR "BUILD_APPIMAGE is ON but nonsteam was not found in PATH.")
-        elseif (NOT NONSTEAM_TOOL)
-            message(WARNING "nonsteam was not found in PATH; the appimage target will fail without -DNONSTEAM_TOOL=...")
-        endif()
 
         set(APPIMAGE_COMMANDS
             COMMAND ${CMAKE_COMMAND} -E make_directory "${APPIMAGE_APPDIR}/usr/bin"
@@ -84,12 +75,6 @@ if (UNIX AND NOT APPLE)
             COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/packaging/GamepadCommander.svg"
                     "${APPIMAGE_APPDIR}/GamepadCommander.svg"
         )
-        if (NONSTEAM_TOOL)
-            list(APPEND APPIMAGE_COMMANDS
-                COMMAND ${CMAKE_COMMAND} -E copy "${NONSTEAM_TOOL}" "${APPIMAGE_APPDIR}/usr/bin/nonsteam"
-                COMMAND chmod +x "${APPIMAGE_APPDIR}/usr/bin/nonsteam"
-            )
-        endif()
         list(APPEND APPIMAGE_COMMANDS
             COMMAND ${CMAKE_COMMAND} -E env "APPIMAGE_EXTRACT_AND_RUN=1" "ARCH=${APPIMAGE_ARCH}" "${APPIMAGETOOL}"
                     "${APPIMAGE_APPDIR}" "${APPIMAGE_OUTPUT}"

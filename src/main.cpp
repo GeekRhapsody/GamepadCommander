@@ -2279,6 +2279,17 @@ static bool isAppImage(const Entry& entry, const Pane& pane) {
     return ext == ".appimage";
 }
 
+static bool isShellScript(const Entry& entry, const Pane& pane) {
+    if (pane.source != PaneSource::Local) {
+        return false;
+    }
+    if (entry.isDir || entry.isParent) {
+        return false;
+    }
+    std::string ext = toLower(entry.path.extension().string());
+    return ext == ".sh";
+}
+
 static bool isZipArchive(const Entry& entry, const Pane& pane) {
     if (pane.source != PaneSource::Local) {
         return false;
@@ -2314,7 +2325,7 @@ static std::vector<std::string> buildActionOptions(const Entry& entry, const Pan
     if (isZipArchive(entry, pane) || isRarArchive(entry, pane)) {
         options.insert(options.begin() + 2, "Extract");
     }
-    if (supportsAddToSteam() && (isWindowsExe(entry, pane) || isAppImage(entry, pane))) {
+    if (supportsAddToSteam() && (isWindowsExe(entry, pane) || isAppImage(entry, pane) || isShellScript(entry, pane))) {
         options.push_back("Add to Steam");
     }
     return options;

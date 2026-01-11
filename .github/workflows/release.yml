@@ -25,10 +25,8 @@ jobs:
           chmod +x .tools/appimagetool-x86_64.AppImage
       - name: Build AppImage
         run: |
-          chmod +x assets/nonsteam
           cmake -S . -B build-appimage -DBUILD_APPIMAGE=ON \
             -DAPPIMAGETOOL="${{ github.workspace }}/.tools/appimagetool-x86_64.AppImage" \
-            -DNONSTEAM_TOOL="${{ github.workspace }}/assets/nonsteam" \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build-appimage --target appimage
           mv build-appimage/GamepadCommander.AppImage \
@@ -78,7 +76,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist\\windows | Out-Null
           Copy-Item build\\GamepadCommander.exe dist\\windows\\
           Copy-Item build\\*.dll dist\\windows\\
-          Copy-Item assets\\nonsteam.exe dist\\windows\\
           $zip = "GamepadCommander-$version-windows-x64.zip"
           Compress-Archive -Path dist\\windows\\* -DestinationPath $zip -Force
       - uses: actions/upload-artifact@v4

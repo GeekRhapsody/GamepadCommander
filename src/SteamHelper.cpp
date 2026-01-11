@@ -95,11 +95,17 @@ std::vector<uint8_t> buildEntryBuffer(uint32_t appId,
                                       const std::string& exe,
                                       const std::string& startDir,
                                       const std::string& launchOptions) {
+    auto quoteIfNeeded = [](const std::string& value) -> std::string {
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+            return value;
+        }
+        return "\"" + value + "\"";
+    };
     std::vector<uint8_t> out;
     appendNumberField(out, "appid", appId);
     appendStringField(out, "AppName", appName);
-    appendStringField(out, "Exe", exe);
-    appendStringField(out, "StartDir", startDir);
+    appendStringField(out, "Exe", quoteIfNeeded(exe));
+    appendStringField(out, "StartDir", quoteIfNeeded(startDir));
     appendStringField(out, "icon", "");
     appendStringField(out, "ShortcutPath", "");
     appendStringField(out, "LaunchOptions", launchOptions);

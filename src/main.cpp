@@ -162,6 +162,8 @@ struct Entry {
     fs::path path;
     bool isDir;
     bool isParent;
+    std::uintmax_t sizeBytes = 0;
+    bool hasSize = false;
 };
 
 enum class PaneSource {
@@ -750,6 +752,24 @@ static void finishTransfer(TransferContext* ctx) {
 static std::string formatScale(float scale) {
     std::ostringstream out;
     out << std::fixed << std::setprecision(1) << scale;
+    return out.str();
+}
+
+static std::string formatBytes(std::uintmax_t bytes) {
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    double value = static_cast<double>(bytes);
+    size_t unit = 0;
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        ++unit;
+    }
+    std::ostringstream out;
+    if (unit == 0 || value >= 10.0) {
+        out << std::fixed << std::setprecision(0);
+    } else {
+        out << std::fixed << std::setprecision(1);
+    }
+    out << value << " " << units[unit];
     return out.str();
 }
 
@@ -1847,6 +1867,21 @@ static bool extractRarWithProgress(const fs::path& rarPath, const fs::path& dest
     return true;
 }
 
+static bool parseUnsignedValue(const std::string& token, std::uintmax_t& value) {
+    if (token.empty()) {
+        return false;
+    }
+    std::uintmax_t parsed = 0;
+    for (char ch : token) {
+        if (!std::isdigit(static_cast<unsigned char>(ch))) {
+            return false;
+        }
+        parsed = parsed * 10 + static_cast<std::uintmax_t>(ch - '0');
+    }
+    value = parsed;
+    return true;
+}
+
 static bool parseFtpListLine(const std::string& line, Entry& entry) {
     if (line.empty()) {
         return false;
@@ -1857,6 +1892,19 @@ static bool parseFtpListLine(const std::string& line, Entry& entry) {
     if (line.find("type=") != std::string::npos) {
         bool isDir = (line.find("type=dir") != std::string::npos || line.find("type=cdir") != std::string::npos ||
                       line.find("type=pdir") != std::string::npos);
+        if (!isDir) {
+            size_t sizePos = line.find("size=");
+            if (sizePos != std::string::npos) {
+                sizePos += std::string("size=").size();
+                size_t endPos = line.find(';', sizePos);
+                std::string sizeToken = line.substr(sizePos, endPos == std::string::npos ? std::string::npos : endPos - sizePos);
+                std::uintmax_t sizeValue = 0;
+                if (parseUnsignedValue(sizeToken, sizeValue)) {
+                    entry.sizeBytes = sizeValue;
+                    entry.hasSize = true;
+                }
+            }
+        }
         size_t nameStart = line.find(' ');
         if (nameStart == std::string::npos) {
             return false;
@@ -1881,17 +1929,23 @@ static bool parseFtpListLine(const std::string& line, Entry& entry) {
     int tokens = 0;
     bool inToken = false;
     size_t nameStart = std::string::npos;
+    size_t tokenStart = std::string::npos;
+    std::string sizeToken;
     for (size_t i = 0; i < line.size(); ++i) {
         if (!std::isspace(static_cast<unsigned char>(line[i]))) {
             if (!inToken) {
                 inToken = true;
                 ++tokens;
+                tokenStart = i;
                 if (tokens == 9) {
                     nameStart = i;
                     break;
                 }
             }
         } else {
+            if (inToken && tokens == 5 && sizeToken.empty()) {
+                sizeToken = line.substr(tokenStart, i - tokenStart);
+            }
             inToken = false;
         }
     }
@@ -1918,6 +1972,13 @@ static bool parseFtpListLine(const std::string& line, Entry& entry) {
     entry.isDir = isDir;
     entry.isParent = false;
     entry.path.clear();
+    if (!entry.isDir && !sizeToken.empty()) {
+        std::uintmax_t sizeValue = 0;
+        if (parseUnsignedValue(sizeToken, sizeValue)) {
+            entry.sizeBytes = sizeValue;
+            entry.hasSize = true;
+        }
+    }
     return !entry.name.empty();
 }
 
@@ -1940,6 +2001,14 @@ static void loadLocalEntries(Pane& pane, const Settings& settings) {
             }
             entry.isDir = item.is_directory();
             entry.isParent = false;
+            if (!entry.isDir) {
+                std::error_code ec;
+                std::uintmax_t size = fs::file_size(entry.path, ec);
+                if (!ec) {
+                    entry.sizeBytes = size;
+                    entry.hasSize = true;
+                }
+            }
             collected.push_back(entry);
         }
     } catch (const fs::filesystem_error&) {
@@ -3389,13 +3458,14 @@ int main(int argc, char** argv) {
         const int margin = static_cast<int>(std::round(20.0f * uiScale));
         const int gap = static_cast<int>(std::round(20.0f * uiScale));
         const int headerHeight = static_cast<int>(std::round(40.0f * uiScale));
+        const int paneFooterHeight = static_cast<int>(std::round(28.0f * uiScale));
         const int footerHeight = static_cast<int>(std::round(36.0f * uiScale));
         const int paneWidth = std::max(1, (width - margin * 2 - gap) / 2);
         const int paneHeight = std::max(1, height - margin * 2 - footerHeight);
         const int fontScale = std::max(1, static_cast<int>(std::round(2.0f * uiScale)));
         const int rowHeight = std::max(1, 8 * fontScale + static_cast<int>(std::round(6.0f * uiScale)));
         const int smallScale = std::max(1, fontScale - 1);
-        const int visibleRows = std::max(1, (paneHeight - headerHeight - 10) / rowHeight);
+        const int visibleRows = std::max(1, (paneHeight - headerHeight - paneFooterHeight - 10) / rowHeight);
 
         for (auto& pane : panes) {
             ensureVisible(pane, visibleRows);
@@ -3438,6 +3508,8 @@ int main(int argc, char** argv) {
             int contentX = rect.x + static_cast<int>(std::round(12.0f * uiScale));
 
             int maxChars = (rect.w - static_cast<int>(std::round(24.0f * uiScale))) / (8 * fontScale + fontScale);
+            int rowRight = rect.x + rect.w - static_cast<int>(std::round(12.0f * uiScale));
+            int sizeGap = static_cast<int>(std::round(8.0f * uiScale));
 
             for (int row = 0; row < visibleRows; ++row) {
                 int index = pane.scroll + row;
@@ -3464,9 +3536,62 @@ int main(int argc, char** argv) {
                     label = "[DIR] " + label;
                 }
 
-                std::string display = ellipsize(label, maxChars);
+                std::string sizeLabel;
+                int nameMaxChars = maxChars;
+                int sizeX = 0;
+                if (!entry.isDir && entry.hasSize) {
+                    sizeLabel = formatBytes(entry.sizeBytes);
+                    int sizeWidth = textWidth(fontScale, sizeLabel);
+                    sizeX = rowRight - sizeWidth;
+                    int nameWidth = sizeX - contentX - sizeGap;
+                    if (nameWidth > 0 && sizeX > contentX) {
+                        int nameAdvance = 8 * fontScale + fontScale;
+                        nameMaxChars = std::max(0, nameWidth / nameAdvance);
+                    } else {
+                        sizeLabel.clear();
+                    }
+                }
+
+                std::string display = ellipsize(label, nameMaxChars);
                 drawText(renderer, contentX, contentY + row * rowHeight, fontScale,
                          textColor, display);
+                if (!sizeLabel.empty()) {
+                    drawText(renderer, sizeX, contentY + row * rowHeight, fontScale,
+                             textColor, sizeLabel);
+                }
+            }
+
+            SDL_Rect paneFooterRect {rect.x + 1, rect.y + rect.h - paneFooterHeight - 1, rect.w - 2, paneFooterHeight};
+            SDL_SetRenderDrawColor(renderer, headerBg.r, headerBg.g, headerBg.b, headerBg.a);
+            SDL_RenderFillRect(renderer, &paneFooterRect);
+
+            int itemCount = 0;
+            for (const auto& entry : pane.entries) {
+                if (!entry.isParent) {
+                    ++itemCount;
+                }
+            }
+            std::string countLabel = std::to_string(itemCount) + (itemCount == 1 ? " item" : " items");
+            std::string freeLabel = "Free: N/A";
+            if (pane.source == PaneSource::Local) {
+                std::error_code ec;
+                fs::space_info spaceInfo = fs::space(pane.cwd, ec);
+                if (!ec) {
+                    freeLabel = formatBytes(spaceInfo.available) + " free";
+                }
+            }
+
+            int footerPad = static_cast<int>(std::round(10.0f * uiScale));
+            int footerY = paneFooterRect.y + static_cast<int>(std::round(8.0f * uiScale));
+            int rightX = paneFooterRect.x + paneFooterRect.w - footerPad - textWidth(smallScale, freeLabel);
+            int leftX = paneFooterRect.x + footerPad;
+            int leftMaxChars = (rightX - leftX - footerPad) / (8 * smallScale + smallScale);
+            if (leftMaxChars > 0) {
+                countLabel = ellipsize(countLabel, leftMaxChars);
+            }
+            drawText(renderer, leftX, footerY, smallScale, textColor, countLabel);
+            if (rightX > leftX) {
+                drawText(renderer, rightX, footerY, smallScale, textColor, freeLabel);
             }
         };
 

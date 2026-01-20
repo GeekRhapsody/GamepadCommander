@@ -185,6 +185,8 @@ enum class Mode {
     Browse,
     ActionMenu,
     ConfirmDelete,
+    Favorites,
+    ConfirmRemoveFavorite,
     Rename,
     CreateFolder,
     AddToSteam,
@@ -855,6 +857,67 @@ static std::string readTag(const std::string& xml, const std::string& tag) {
         return "";
     }
     return xml.substr(start, end - start);
+}
+
+static std::string normalizeFavoritePath(const fs::path& path) {
+    return path.lexically_normal().string();
+}
+
+static bool favoriteExists(const std::vector<fs::path>& favorites, const fs::path& path) {
+    std::string target = normalizeFavoritePath(path);
+    for (const auto& favorite : favorites) {
+        if (normalizeFavoritePath(favorite) == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool loadFavorites(std::vector<fs::path>& favorites, const std::string& path) {
+    favorites.clear();
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    std::string xml = buffer.str();
+    if (xml.empty()) {
+        return false;
+    }
+    std::unordered_set<std::string> seen;
+    const std::string open = "<path>";
+    const std::string close = "</path>";
+    size_t pos = 0;
+    while ((pos = xml.find(open, pos)) != std::string::npos) {
+        pos += open.size();
+        size_t end = xml.find(close, pos);
+        if (end == std::string::npos) {
+            break;
+        }
+        std::string value = unescapeXml(xml.substr(pos, end - pos));
+        if (!value.empty()) {
+            std::string normalized = normalizeFavoritePath(fs::path(value));
+            if (seen.insert(normalized).second) {
+                favorites.emplace_back(normalized);
+            }
+        }
+        pos = end + close.size();
+    }
+    return true;
+}
+
+static bool saveFavorites(const std::vector<fs::path>& favorites, const std::string& path) {
+    std::ofstream file(path, std::ios::trunc);
+    if (!file.is_open()) {
+        return false;
+    }
+    file << "<favorites>\n";
+    for (const auto& favorite : favorites) {
+        file << "  <path>" << escapeXml(favorite.string()) << "</path>\n";
+    }
+    file << "</favorites>\n";
+    return true;
 }
 
 static float clampUiScale(float scale) {
@@ -2333,6 +2396,20 @@ static void ensureVisible(Pane& pane, int visibleRows) {
     }
 }
 
+static void ensureMenuVisible(int& scroll, int selected, int visibleRows, int totalItems) {
+    if (visibleRows <= 0) {
+        scroll = 0;
+        return;
+    }
+    if (selected < scroll) {
+        scroll = selected;
+    } else if (selected >= scroll + visibleRows) {
+        scroll = selected - visibleRows + 1;
+    }
+    int maxScroll = std::max(0, totalItems - visibleRows);
+    scroll = std::clamp(scroll, 0, maxScroll);
+}
+
 static void setStatus(StatusMessage& status, const std::string& text) {
     status.text = text;
     status.started = std::chrono::steady_clock::now();
@@ -2578,15 +2655,23 @@ int main(int argc, char** argv) {
     settings.panePath[1] = homePath;
 
     std::string configPath;
+    std::string favoritesPath;
     char* prefPath = SDL_GetPrefPath("GamepadCommander", "GamepadCommander");
     if (prefPath) {
         configPath = std::string(prefPath) + "config.xml";
         SDL_free(prefPath);
     }
     if (!configPath.empty()) {
+        fs::path configFile(configPath);
+        favoritesPath = (configFile.parent_path() / "favorites.xml").string();
         loadConfig(settings, configPath, homePath);
     }
     settings.uiScale = clampUiScale(settings.uiScale);
+
+    std::vector<fs::path> favorites;
+    if (!favoritesPath.empty()) {
+        loadFavorites(favorites, favoritesPath);
+    }
 
     SDL_Window* window = SDL_CreateWindow(
         "GamepadCommander",
@@ -2646,6 +2731,9 @@ int main(int argc, char** argv) {
     int quitConfirmIndex = 1;
     int appMenuIndex = 0;
     int settingsIndex = 0;
+    int favoritesIndex = 0;
+    int favoritesScroll = 0;
+    int favoriteRemoveIndex = -1;
     ActionContext action;
     StatusMessage status;
 
@@ -2756,6 +2844,52 @@ int main(int argc, char** argv) {
         auto cancelEdit = [&]() {
             mode = Mode::Settings;
             SDL_StopTextInput();
+        };
+        auto addFavorite = [&]() {
+            if (panes[activePane].source != PaneSource::Local) {
+                setStatus(status, "Favorites are local-only");
+                return;
+            }
+            fs::path target = panes[activePane].cwd;
+            if (favoriteExists(favorites, target)) {
+                setStatus(status, "Already in favorites list");
+                return;
+            }
+            favorites.push_back(target);
+            if (!favoritesPath.empty()) {
+                saveFavorites(favorites, favoritesPath);
+            }
+            setStatus(status, "Added to favorites");
+        };
+        auto openFavorite = [&](int index) {
+            if (index < 0 || index >= static_cast<int>(favorites.size())) {
+                return;
+            }
+            fs::path target = favorites[static_cast<size_t>(index)];
+            if (!fs::is_directory(target)) {
+                setStatus(status, "Favorite not found");
+                return;
+            }
+            Pane& pane = panes[activePane];
+            pane.source = PaneSource::Local;
+            pane.cwd = target;
+            pane.ftpPath = "/";
+            resetPanePosition(pane);
+            loadEntries(pane, settings, &status);
+            mode = Mode::Browse;
+        };
+        auto removeFavorite = [&](int index) {
+            if (index < 0 || index >= static_cast<int>(favorites.size())) {
+                return;
+            }
+            favorites.erase(favorites.begin() + index);
+            if (!favoritesPath.empty()) {
+                saveFavorites(favorites, favoritesPath);
+            }
+            if (favoritesIndex > static_cast<int>(favorites.size())) {
+                favoritesIndex = static_cast<int>(favorites.size());
+            }
+            setStatus(status, "Favorite removed");
         };
 
         SDL_Event event;
@@ -2876,6 +3010,10 @@ int main(int argc, char** argv) {
                             menuIndex = 0;
                             mode = Mode::ActionMenu;
                         }
+                    } else if (key == SDLK_y) {
+                        favoritesIndex = 0;
+                        favoritesScroll = 0;
+                        mode = Mode::Favorites;
                     }
                 } else if (mode == Mode::ActionMenu) {
                     auto actionOptions = buildActionOptions(action.entry, panes[action.paneIndex]);
@@ -2897,6 +3035,30 @@ int main(int argc, char** argv) {
                                              addToSteamName, addToSteamCursor,
                                              osk, &transferCtx);
                     }
+                } else if (mode == Mode::Favorites) {
+                    int totalItems = static_cast<int>(favorites.size()) + 1;
+                    if (favoritesIndex < 0 || favoritesIndex >= totalItems) {
+                        favoritesIndex = 0;
+                    }
+                    if (key == SDLK_UP) {
+                        favoritesIndex = (favoritesIndex + totalItems - 1) % totalItems;
+                    } else if (key == SDLK_DOWN) {
+                        favoritesIndex = (favoritesIndex + 1) % totalItems;
+                    } else if (key == SDLK_RETURN) {
+                        if (favoritesIndex == 0) {
+                            addFavorite();
+                        } else {
+                            openFavorite(favoritesIndex - 1);
+                        }
+                    } else if (key == SDLK_x) {
+                        if (favoritesIndex == 0) {
+                            setStatus(status, "Select a favorite to remove");
+                        } else {
+                            favoriteRemoveIndex = favoritesIndex - 1;
+                            confirmIndex = 1;
+                            mode = Mode::ConfirmRemoveFavorite;
+                        }
+                    }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
                         confirmIndex = 1 - confirmIndex;
@@ -2911,6 +3073,15 @@ int main(int argc, char** argv) {
                             loadEntries(panes[action.paneIndex], settings, &status);
                         }
                         mode = Mode::Browse;
+                    }
+                } else if (mode == Mode::ConfirmRemoveFavorite) {
+                    if (key == SDLK_LEFT || key == SDLK_RIGHT) {
+                        confirmIndex = 1 - confirmIndex;
+                    } else if (key == SDLK_RETURN) {
+                        if (confirmIndex == 0) {
+                            removeFavorite(favoriteRemoveIndex);
+                        }
+                        mode = Mode::Favorites;
                     }
                 } else if (mode == Mode::Rename) {
                     if (key == SDLK_LEFT) {
@@ -3071,6 +3242,10 @@ int main(int argc, char** argv) {
                             menuIndex = 0;
                             mode = Mode::ActionMenu;
                         }
+                    } else if (button == SDL_CONTROLLER_BUTTON_Y) {
+                        favoritesIndex = 0;
+                        favoritesScroll = 0;
+                        mode = Mode::Favorites;
                     } else if (button == SDL_CONTROLLER_BUTTON_BACK) {
                         appMenuIndex = 0;
                         mode = Mode::AppMenu;
@@ -3097,6 +3272,32 @@ int main(int argc, char** argv) {
                                              addToSteamName, addToSteamCursor,
                                              osk, &transferCtx);
                     }
+                } else if (mode == Mode::Favorites) {
+                    int totalItems = static_cast<int>(favorites.size()) + 1;
+                    if (favoritesIndex < 0 || favoritesIndex >= totalItems) {
+                        favoritesIndex = 0;
+                    }
+                    if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
+                        favoritesIndex = (favoritesIndex + totalItems - 1) % totalItems;
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
+                        favoritesIndex = (favoritesIndex + 1) % totalItems;
+                    } else if (button == SDL_CONTROLLER_BUTTON_B) {
+                        mode = Mode::Browse;
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (favoritesIndex == 0) {
+                            addFavorite();
+                        } else {
+                            openFavorite(favoritesIndex - 1);
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+                        if (favoritesIndex == 0) {
+                            setStatus(status, "Select a favorite to remove");
+                        } else {
+                            favoriteRemoveIndex = favoritesIndex - 1;
+                            confirmIndex = 1;
+                            mode = Mode::ConfirmRemoveFavorite;
+                        }
+                    }
                 } else if (mode == Mode::ConfirmDelete) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
                         confirmIndex = 1 - confirmIndex;
@@ -3113,6 +3314,17 @@ int main(int argc, char** argv) {
                             loadEntries(panes[action.paneIndex], settings, &status);
                         }
                         mode = Mode::Browse;
+                    }
+                } else if (mode == Mode::ConfirmRemoveFavorite) {
+                    if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT || button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                        confirmIndex = 1 - confirmIndex;
+                    } else if (button == SDL_CONTROLLER_BUTTON_B) {
+                        mode = Mode::Favorites;
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (confirmIndex == 0) {
+                            removeFavorite(favoriteRemoveIndex);
+                        }
+                        mode = Mode::Favorites;
                     }
                 } else if (mode == Mode::Rename) {
                     auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
@@ -3606,7 +3818,7 @@ int main(int argc, char** argv) {
         drawText(renderer, footerRect.x + static_cast<int>(std::round(10.0f * uiScale)),
                  footerRect.y + static_cast<int>(std::round(10.0f * uiScale)),
                  fontScale, footerText,
-                 "L1/R1: Active Pane  X: Actions  A: Enter  B: Up  Select: Menu");
+                 "L1/R1: Active Pane  X: Actions  Y: Favorites  A: Enter  B: Up  Select: Menu");
 
         if (mode != Mode::Browse) {
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
@@ -3620,12 +3832,18 @@ int main(int argc, char** argv) {
                 modalHeight = static_cast<int>(std::round(440.0f * uiScale));
             } else if (mode == Mode::ActionMenu) {
                 modalHeight = static_cast<int>(std::round(330.0f * uiScale));
+            } else if (mode == Mode::Favorites) {
+                modalWidth = static_cast<int>(std::round(820.0f * uiScale));
+                modalHeight = static_cast<int>(std::round(460.0f * uiScale));
             } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::AddToSteam) {
                 modalWidth = static_cast<int>(std::round(920.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
                 modalWidth = static_cast<int>(std::round(360.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(240.0f * uiScale));
+            } else if (mode == Mode::ConfirmRemoveFavorite) {
+                modalWidth = static_cast<int>(std::round(520.0f * uiScale));
+                modalHeight = static_cast<int>(std::round(260.0f * uiScale));
             }
 
             SDL_Rect modal {width / 2 - modalWidth / 2, height / 2 - modalHeight / 2, modalWidth, modalHeight};
@@ -3668,8 +3886,69 @@ int main(int argc, char** argv) {
                          modal.x + padding,
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                         smallScale, modalText, "A: Select  B: Back");
+            } else if (mode == Mode::Favorites) {
+                drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Favorites");
+                int listStartY = modal.y + padding + static_cast<int>(std::round(50.0f * uiScale));
+                int listEndY = modal.y + modal.h - padding - helpLineHeight - static_cast<int>(std::round(12.0f * uiScale));
+                int listHeight = std::max(0, listEndY - listStartY);
+                int visibleRows = std::max(1, listHeight / optionHeight);
+                int totalItems = static_cast<int>(favorites.size()) + 1;
+                if (favoritesIndex < 0 || favoritesIndex >= totalItems) {
+                    favoritesIndex = 0;
+                }
+                ensureMenuVisible(favoritesScroll, favoritesIndex, visibleRows, totalItems);
+                int maxChars = (modal.w - padding * 2 - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
+                for (int row = 0; row < visibleRows; ++row) {
+                    int index = favoritesScroll + row;
+                    if (index >= totalItems) {
+                        break;
+                    }
+                    SDL_Rect optionRect {
+                        modal.x + padding,
+                        listStartY + row * optionHeight,
+                        modal.w - padding * 2,
+                        optionHeight
+                    };
+                    if (index == favoritesIndex) {
+                        SDL_SetRenderDrawColor(renderer, 40, 120, 160, 255);
+                        SDL_RenderFillRect(renderer, &optionRect);
+                    }
+                    std::string label = (index == 0) ? "Add to Favorites"
+                                                     : favorites[static_cast<size_t>(index - 1)].string();
+                    drawText(renderer,
+                             optionRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                             optionRect.y + static_cast<int>(std::round(6.0f * uiScale)),
+                             fontScale, modalText, ellipsize(label, maxChars));
+                }
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                         smallScale, modalText, "A: Open/Add  X: Remove  B: Back");
             } else if (mode == Mode::ConfirmDelete) {
                 drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Delete this item?");
+                SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};
+                SDL_Rect noRect {modal.x + modal.w - padding * 2 - static_cast<int>(std::round(120.0f * uiScale)),
+                                 modal.y + modal.h / 2,
+                                 static_cast<int>(std::round(120.0f * uiScale)),
+                                 static_cast<int>(std::round(40.0f * uiScale))};
+                SDL_SetRenderDrawColor(renderer, confirmIndex == 0 ? 40 : 25, confirmIndex == 0 ? 120 : 30, confirmIndex == 0 ? 160 : 35, 255);
+                SDL_RenderFillRect(renderer, &yesRect);
+                SDL_SetRenderDrawColor(renderer, confirmIndex == 1 ? 40 : 25, confirmIndex == 1 ? 120 : 30, confirmIndex == 1 ? 160 : 35, 255);
+                SDL_RenderFillRect(renderer, &noRect);
+                drawText(renderer,
+                         yesRect.x + static_cast<int>(std::round(30.0f * uiScale)),
+                         yesRect.y + static_cast<int>(std::round(10.0f * uiScale)),
+                         fontScale, modalText, "Yes");
+                drawText(renderer,
+                         noRect.x + static_cast<int>(std::round(40.0f * uiScale)),
+                         noRect.y + static_cast<int>(std::round(10.0f * uiScale)),
+                         fontScale, modalText, "No");
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                         smallScale, modalText, "A: Confirm  B: Cancel");
+            } else if (mode == Mode::ConfirmRemoveFavorite) {
+                drawText(renderer, modal.x + padding, modal.y + padding * 2, fontScale, modalText, "Remove this favorite?");
                 SDL_Rect yesRect {modal.x + padding * 2, modal.y + modal.h / 2, static_cast<int>(std::round(120.0f * uiScale)), static_cast<int>(std::round(40.0f * uiScale))};
                 SDL_Rect noRect {modal.x + modal.w - padding * 2 - static_cast<int>(std::round(120.0f * uiScale)),
                                  modal.y + modal.h / 2,
@@ -3955,6 +4234,9 @@ int main(int argc, char** argv) {
             }
         }
         saveConfig(settings, panes, configPath);
+    }
+    if (!favoritesPath.empty()) {
+        saveFavorites(favorites, favoritesPath);
     }
 
 #ifdef USE_CURL

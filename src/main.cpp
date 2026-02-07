@@ -190,6 +190,7 @@ enum class Mode {
     Rename,
     CreateFolder,
     AddToSteam,
+    AddToFrontend,
     AppMenu,
     Settings,
     EditSetting,
@@ -215,6 +216,7 @@ static bool isWindowsExe(const Entry& entry, const Pane& pane);
 static bool isZipArchive(const Entry& entry, const Pane& pane);
 static bool isRarArchive(const Entry& entry, const Pane& pane);
 static std::string defaultSteamAppName(const Entry& entry);
+static std::string defaultFrontendShortcutName(const Entry& entry);
 static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane);
 static void resetPanePosition(Pane& pane);
 
@@ -225,6 +227,8 @@ struct Settings {
     std::string ftpPass;
     std::string steamLaunchOptions;
     std::string steamCompatibilityToolVersion;
+    std::string frontendLaunchOptions;
+    fs::path frontendShortcutDir;
     float uiScale = 1.0f;
     bool showHidden = false;
     fs::path panePath[2];
@@ -236,7 +240,9 @@ enum class SettingField {
     FtpUser,
     FtpPass,
     SteamLaunchOptions,
-    SteamCompatibilityTool
+    SteamCompatibilityTool,
+    FrontendLaunchOptions,
+    FrontendShortcutDir
 };
 
 enum class OskAction {
@@ -443,6 +449,105 @@ static bool addExeToSteam(const fs::path& exePath,
             error = compatError;
         }
     }
+    return true;
+}
+
+static bool addExeToFrontend(const fs::path& exePath,
+                             const std::string& shortcutName,
+                             const Settings& settings,
+                             fs::path& shortcutPath,
+                             bool& updated,
+                             std::string& error) {
+    updated = false;
+    std::string name = trimWhitespace(shortcutName);
+    if (name.empty()) {
+        error = "Shortcut name required";
+        return false;
+    }
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
+        error = "Shortcut name cannot contain path separators";
+        return false;
+    }
+    std::string lowerName = toLower(name);
+    if (lowerName.size() < 3 || lowerName.compare(lowerName.size() - 3, 3, ".sh") != 0) {
+        name += ".sh";
+    }
+
+    if (settings.frontendShortcutDir.empty()) {
+        error = "Frontend shortcut folder not set";
+        return false;
+    }
+
+    fs::path targetDir = settings.frontendShortcutDir;
+    std::error_code ec;
+    if (!fs::exists(targetDir, ec)) {
+        fs::create_directories(targetDir, ec);
+        if (ec) {
+            error = "Failed to create frontend shortcut folder";
+            return false;
+        }
+    }
+    if (!fs::is_directory(targetDir, ec) || ec) {
+        error = "Frontend shortcut path is not a directory";
+        return false;
+    }
+
+    fs::path absExe = fs::absolute(exePath);
+    shortcutPath = targetDir / name;
+
+    if (fs::exists(shortcutPath, ec)) {
+        if (ec) {
+            error = "Failed to check existing shortcut";
+            return false;
+        }
+        if (!fs::is_regular_file(shortcutPath, ec) || ec) {
+            error = "Shortcut path exists and is not a file";
+            return false;
+        }
+        updated = true;
+    }
+
+    std::string options = trimWhitespace(settings.frontendLaunchOptions);
+    std::string command;
+    if (!options.empty()) {
+        command = options + " ";
+    }
+    command += "umu-run ";
+    command += quoteArg(absExe.string());
+
+    std::ofstream file(shortcutPath, std::ios::trunc);
+    if (!file.is_open()) {
+        error = "Failed to write shortcut";
+        return false;
+    }
+    file << "#!/usr/bin/env bash\n";
+    file << command << "\n";
+    file.close();
+    if (!file) {
+        error = "Failed to write shortcut";
+        return false;
+    }
+
+#ifndef _WIN32
+    std::error_code absError;
+    fs::path absShortcut = fs::absolute(shortcutPath, absError);
+    const std::string shortcutLogPath = absError ? shortcutPath.string() : absShortcut.string();
+    SDL_Log("Frontend shortcut path: %s", shortcutLogPath.c_str());
+#else
+    SDL_Log("Frontend shortcut path: %s", shortcutPath.string().c_str());
+#endif
+
+#ifndef _WIN32
+    std::error_code permError;
+    fs::permissions(shortcutPath,
+                    fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                    fs::perm_options::add,
+                    permError);
+    if (permError) {
+        error = "Shortcut created, but failed to set executable permission";
+    }
+#endif
+
     return true;
 }
 
@@ -799,6 +904,26 @@ static fs::path getHomePath() {
     return fs::current_path();
 }
 
+static fs::path expandTildePath(const std::string& input, const fs::path& homePath) {
+    std::string trimmed = trimWhitespace(input);
+    if (trimmed.empty()) {
+        return {};
+    }
+    if (trimmed[0] != '~') {
+        return fs::path(trimmed);
+    }
+    if (homePath.empty()) {
+        return fs::path(trimmed);
+    }
+    if (trimmed.size() == 1) {
+        return homePath;
+    }
+    if (trimmed[1] == '/' || trimmed[1] == '\\') {
+        return homePath / trimmed.substr(2);
+    }
+    return fs::path(trimmed);
+}
+
 static std::string escapeXml(const std::string& text) {
     std::string out;
     out.reserve(text.size());
@@ -959,6 +1084,11 @@ static bool loadConfig(Settings& settings, const std::string& path, const fs::pa
     settings.ftpPass = unescapeXml(readTag(xml, "ftpPass"));
     settings.steamLaunchOptions = unescapeXml(readTag(xml, "steamLaunchOptions"));
     settings.steamCompatibilityToolVersion = unescapeXml(readTag(xml, "steamCompatibilityToolVersion"));
+    settings.frontendLaunchOptions = unescapeXml(readTag(xml, "frontendLaunchOptions"));
+    std::string frontendDir = unescapeXml(readTag(xml, "frontendShortcutDir"));
+    if (!frontendDir.empty()) {
+        settings.frontendShortcutDir = expandTildePath(frontendDir, homePath);
+    }
     std::string showHiddenValue = readTag(xml, "showHidden");
     if (!showHiddenValue.empty()) {
         std::string lowered;
@@ -1002,6 +1132,8 @@ static bool saveConfig(const Settings& settings, const Pane panes[2], const std:
     file << "  <steamLaunchOptions>" << escapeXml(settings.steamLaunchOptions) << "</steamLaunchOptions>\n";
     file << "  <steamCompatibilityToolVersion>" << escapeXml(settings.steamCompatibilityToolVersion)
          << "</steamCompatibilityToolVersion>\n";
+    file << "  <frontendLaunchOptions>" << escapeXml(settings.frontendLaunchOptions) << "</frontendLaunchOptions>\n";
+    file << "  <frontendShortcutDir>" << escapeXml(settings.frontendShortcutDir.string()) << "</frontendShortcutDir>\n";
     file << "  <showHidden>" << (settings.showHidden ? "true" : "false") << "</showHidden>\n";
     file << "  <pane0>" << escapeXml(panes[0].lastLocalCwd.string()) << "</pane0>\n";
     file << "  <pane1>" << escapeXml(panes[1].lastLocalCwd.string()) << "</pane1>\n";
@@ -2303,6 +2435,8 @@ static void handleActionSelection(int menuIndex,
                                   size_t& createFolderCursor,
                                   std::string& addToSteamName,
                                   size_t& addToSteamCursor,
+                                  std::string& addToFrontendName,
+                                  size_t& addToFrontendCursor,
                                   OskState& osk,
                                   TransferContext* transferCtx) {
     auto options = buildActionOptions(action.entry, panes[action.paneIndex]);
@@ -2343,6 +2477,15 @@ static void handleActionSelection(int menuIndex,
         addToSteamCursor = addToSteamName.size();
         osk = {};
         mode = Mode::AddToSteam;
+        SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
+        SDL_StartTextInput();
+        return;
+    }
+    if (option == "Add to Frontend") {
+        addToFrontendName = defaultFrontendShortcutName(action.entry);
+        addToFrontendCursor = addToFrontendName.size();
+        osk = {};
+        mode = Mode::AddToFrontend;
         SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
         SDL_StartTextInput();
         return;
@@ -2482,10 +2625,22 @@ static std::string defaultSteamAppName(const Entry& entry) {
     return name;
 }
 
+static std::string defaultFrontendShortcutName(const Entry& entry) {
+    fs::path parent = entry.path.parent_path();
+    std::string name = parent.filename().string();
+    if (name.empty()) {
+        name = defaultSteamAppName(entry);
+    }
+    return name;
+}
+
 static std::vector<std::string> buildActionOptions(const Entry& entry, const Pane& pane) {
     std::vector<std::string> options = {"Copy", "Move", "Delete", "Rename", "Create New Folder"};
     if (isZipArchive(entry, pane) || isRarArchive(entry, pane)) {
         options.insert(options.begin() + 2, "Extract");
+    }
+    if (isWindowsExe(entry, pane)) {
+        options.push_back("Add to Frontend");
     }
     if (supportsAddToSteam() && (isWindowsExe(entry, pane) || isAppImage(entry, pane) || isShellScript(entry, pane))) {
         options.push_back("Add to Steam");
@@ -2738,22 +2893,26 @@ int main(int argc, char** argv) {
     StatusMessage status;
 
     const std::array<std::string, 3> appMenuOptions = {"Settings", "Connect to FTP", "Quit"};
-    const std::array<std::string, 9> settingsOptions = {"FTP Host",
-                                                        "FTP Port",
-                                                        "FTP User",
-                                                        "FTP Password",
-                                                        "Steam Launch Options",
-                                                        "Steam Compatibility Tool",
-                                                        "UI Scale",
-                                                        "Show Hidden",
-                                                        "Back"};
+    const std::array<std::string, 11> settingsOptions = {"FTP Host",
+                                                         "FTP Port",
+                                                         "FTP User",
+                                                         "FTP Password",
+                                                         "Steam Launch Options",
+                                                         "Steam Compatibility Tool",
+                                                         "Frontend Launch Options",
+                                                         "Frontend Shortcut Folder",
+                                                         "UI Scale",
+                                                         "Show Hidden",
+                                                         "Back"};
 
     std::string renameBuffer;
     std::string createFolderName;
     std::string addToSteamName;
+    std::string addToFrontendName;
     size_t renameCursor = 0;
     size_t createFolderCursor = 0;
     size_t addToSteamCursor = 0;
+    size_t addToFrontendCursor = 0;
     OskState osk;
     std::string editBuffer;
     size_t editCursor = 0;
@@ -2818,6 +2977,29 @@ int main(int argc, char** argv) {
             mode = Mode::Browse;
             SDL_StopTextInput();
         };
+        auto commitAddToFrontend = [&]() {
+            std::string error;
+            fs::path shortcutPath;
+            bool updated = false;
+            if (addExeToFrontend(action.entry.path, addToFrontendName, settings, shortcutPath, updated, error)) {
+                std::string name = shortcutPath.filename().string();
+                if (!error.empty()) {
+                    setStatus(status, "Added to Frontend, but: " + error);
+                } else if (updated) {
+                    setStatus(status, "Frontend shortcut updated: " + name);
+                } else {
+                    setStatus(status, "Frontend shortcut created: " + name);
+                }
+            } else {
+                setStatus(status, "Add to Frontend failed: " + error);
+            }
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
+        auto cancelAddToFrontend = [&]() {
+            mode = Mode::Browse;
+            SDL_StopTextInput();
+        };
         auto commitEdit = [&]() {
             if (editField == SettingField::FtpHost) {
                 settings.ftpHost = editBuffer;
@@ -2837,6 +3019,10 @@ int main(int argc, char** argv) {
                 settings.steamLaunchOptions = editBuffer;
             } else if (editField == SettingField::SteamCompatibilityTool) {
                 settings.steamCompatibilityToolVersion = editBuffer;
+            } else if (editField == SettingField::FrontendLaunchOptions) {
+                settings.frontendLaunchOptions = editBuffer;
+            } else if (editField == SettingField::FrontendShortcutDir) {
+                settings.frontendShortcutDir = expandTildePath(editBuffer, homePath);
             }
             mode = Mode::Settings;
             SDL_StopTextInput();
@@ -2951,7 +3137,8 @@ int main(int argc, char** argv) {
             }
 
             if (event.type == SDL_TEXTINPUT &&
-                (mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::EditSetting || mode == Mode::AddToSteam)) {
+                (mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::EditSetting ||
+                 mode == Mode::AddToSteam || mode == Mode::AddToFrontend)) {
                 std::string input = event.text.text;
                 if (mode == Mode::Rename) {
                     insertFiltered(renameBuffer, renameCursor, input, false);
@@ -2959,6 +3146,8 @@ int main(int argc, char** argv) {
                     insertFiltered(createFolderName, createFolderCursor, input, false);
                 } else if (mode == Mode::AddToSteam) {
                     insertFiltered(addToSteamName, addToSteamCursor, input, false);
+                } else if (mode == Mode::AddToFrontend) {
+                    insertFiltered(addToFrontendName, addToFrontendCursor, input, false);
                 } else {
                     bool digitsOnly = (editField == SettingField::FtpPort);
                     insertFiltered(editBuffer, editCursor, input, digitsOnly);
@@ -2975,6 +3164,8 @@ int main(int argc, char** argv) {
                         cancelEdit();
                     } else if (mode == Mode::AddToSteam) {
                         cancelAddToSteam();
+                    } else if (mode == Mode::AddToFrontend) {
+                        cancelAddToFrontend();
                     } else if (mode == Mode::CreateFolder) {
                         cancelCreateFolder();
                     } else if (mode == Mode::Rename) {
@@ -3033,6 +3224,7 @@ int main(int argc, char** argv) {
                                              confirmIndex, renameBuffer, renameCursor,
                                              createFolderName, createFolderCursor,
                                              addToSteamName, addToSteamCursor,
+                                             addToFrontendName, addToFrontendCursor,
                                              osk, &transferCtx);
                     }
                 } else if (mode == Mode::Favorites) {
@@ -3125,6 +3317,20 @@ int main(int argc, char** argv) {
                     } else if (key == SDLK_RETURN) {
                         commitAddToSteam();
                     }
+                } else if (mode == Mode::AddToFrontend) {
+                    if (key == SDLK_LEFT) {
+                        if (addToFrontendCursor > 0) {
+                            --addToFrontendCursor;
+                        }
+                    } else if (key == SDLK_RIGHT) {
+                        if (addToFrontendCursor < addToFrontendName.size()) {
+                            ++addToFrontendCursor;
+                        }
+                    } else if (key == SDLK_BACKSPACE) {
+                        backspaceAtCursor(addToFrontendName, addToFrontendCursor);
+                    } else if (key == SDLK_RETURN) {
+                        commitAddToFrontend();
+                    }
                 } else if (mode == Mode::AppMenu) {
                     if (key == SDLK_UP) {
                         appMenuIndex = (appMenuIndex + static_cast<int>(appMenuOptions.size()) - 1) % static_cast<int>(appMenuOptions.size());
@@ -3185,6 +3391,12 @@ int main(int argc, char** argv) {
                         } else if (option == "Steam Compatibility Tool") {
                             editField = SettingField::SteamCompatibilityTool;
                             editBuffer = settings.steamCompatibilityToolVersion;
+                        } else if (option == "Frontend Launch Options") {
+                            editField = SettingField::FrontendLaunchOptions;
+                            editBuffer = settings.frontendLaunchOptions;
+                        } else if (option == "Frontend Shortcut Folder") {
+                            editField = SettingField::FrontendShortcutDir;
+                            editBuffer = settings.frontendShortcutDir.string();
                         }
                         editCursor = editBuffer.size();
                         osk = {};
@@ -3270,6 +3482,7 @@ int main(int argc, char** argv) {
                                              confirmIndex, renameBuffer, renameCursor,
                                              createFolderName, createFolderCursor,
                                              addToSteamName, addToSteamCursor,
+                                             addToFrontendName, addToFrontendCursor,
                                              osk, &transferCtx);
                     }
                 } else if (mode == Mode::Favorites) {
@@ -3512,6 +3725,68 @@ int main(int argc, char** argv) {
                     } else if (button == SDL_CONTROLLER_BUTTON_B) {
                         cancelAddToSteam();
                     }
+                } else if (mode == Mode::AddToFrontend) {
+                    auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                    clampOskSelection(osk, layout);
+                    int rows = static_cast<int>(layout.size());
+                    if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
+                        if (addToFrontendCursor > 0) {
+                            --addToFrontendCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
+                        if (addToFrontendCursor < addToFrontendName.size()) {
+                            ++addToFrontendCursor;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_UP && rows > 0) {
+                        osk.row = (osk.row + rows - 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_DOWN && rows > 0) {
+                        osk.row = (osk.row + 1) % rows;
+                        osk.col = std::min(osk.col, static_cast<int>(layout[osk.row].size()) - 1);
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_LEFT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + cols - 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT && rows > 0) {
+                        int cols = static_cast<int>(layout[osk.row].size());
+                        if (cols > 0) {
+                            osk.col = (osk.col + 1) % cols;
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_A) {
+                        if (!layout.empty() && !layout[osk.row].empty()) {
+                            const OskKey& key = layout[osk.row][osk.col];
+                            if (key.action == OskAction::None) {
+                                insertFiltered(addToFrontendName, addToFrontendCursor, key.value, false);
+                            } else if (key.action == OskAction::Backspace) {
+                                backspaceAtCursor(addToFrontendName, addToFrontendCursor);
+                            } else if (key.action == OskAction::Clear) {
+                                addToFrontendName.clear();
+                                addToFrontendCursor = 0;
+                            } else if (key.action == OskAction::Ok) {
+                                commitAddToFrontend();
+                            } else if (key.action == OskAction::Cancel) {
+                                cancelAddToFrontend();
+                            } else if (key.action == OskAction::ToggleShift) {
+                                osk.uppercase = !osk.uppercase;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            } else if (key.action == OskAction::ToggleSymbols) {
+                                osk.symbols = !osk.symbols;
+                                auto updated = buildOskLayout(osk.uppercase, osk.symbols, false);
+                                clampOskSelection(osk, updated);
+                            }
+                        }
+                    } else if (button == SDL_CONTROLLER_BUTTON_X) {
+                        backspaceAtCursor(addToFrontendName, addToFrontendCursor);
+                    } else if (button == SDL_CONTROLLER_BUTTON_Y) {
+                        addToFrontendName.clear();
+                        addToFrontendCursor = 0;
+                    } else if (button == SDL_CONTROLLER_BUTTON_START) {
+                        commitAddToFrontend();
+                    } else if (button == SDL_CONTROLLER_BUTTON_B) {
+                        cancelAddToFrontend();
+                    }
                 } else if (mode == Mode::AppMenu) {
                     if (button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
                         appMenuIndex = (appMenuIndex + static_cast<int>(appMenuOptions.size()) - 1) % static_cast<int>(appMenuOptions.size());
@@ -3576,6 +3851,12 @@ int main(int argc, char** argv) {
                         } else if (option == "Steam Compatibility Tool") {
                             editField = SettingField::SteamCompatibilityTool;
                             editBuffer = settings.steamCompatibilityToolVersion;
+                        } else if (option == "Frontend Launch Options") {
+                            editField = SettingField::FrontendLaunchOptions;
+                            editBuffer = settings.frontendLaunchOptions;
+                        } else if (option == "Frontend Shortcut Folder") {
+                            editField = SettingField::FrontendShortcutDir;
+                            editBuffer = settings.frontendShortcutDir.string();
                         }
                         editCursor = editBuffer.size();
                         osk = {};
@@ -3829,13 +4110,14 @@ int main(int argc, char** argv) {
             int modalHeight = static_cast<int>(std::round(280.0f * uiScale));
             if (mode == Mode::Settings) {
                 modalWidth = static_cast<int>(std::round(780.0f * uiScale));
-                modalHeight = static_cast<int>(std::round(440.0f * uiScale));
+                modalHeight = static_cast<int>(std::round(520.0f * uiScale));
             } else if (mode == Mode::ActionMenu) {
                 modalHeight = static_cast<int>(std::round(330.0f * uiScale));
             } else if (mode == Mode::Favorites) {
                 modalWidth = static_cast<int>(std::round(820.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(460.0f * uiScale));
-            } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::CreateFolder || mode == Mode::AddToSteam) {
+            } else if (mode == Mode::EditSetting || mode == Mode::Rename || mode == Mode::CreateFolder ||
+                       mode == Mode::AddToSteam || mode == Mode::AddToFrontend) {
                 modalWidth = static_cast<int>(std::round(920.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(420.0f * uiScale));
             } else if (mode == Mode::AppMenu) {
@@ -4063,6 +4345,37 @@ int main(int argc, char** argv) {
                          modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
                          smallScale, modalText,
                          "X: Backspace  Y: Clear  Start: Add  B: Cancel");
+            } else if (mode == Mode::AddToFrontend) {
+                drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Add to Frontend");
+                drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)), smallScale, modalText,
+                         "Pick a shortcut name.");
+
+                SDL_Rect fieldRect {modal.x + padding, modal.y + padding + static_cast<int>(std::round(70.0f * uiScale)),
+                                    modal.w - padding * 2, static_cast<int>(std::round(40.0f * uiScale))};
+                SDL_SetRenderDrawColor(renderer, 25, 30, 35, 255);
+                SDL_RenderFillRect(renderer, &fieldRect);
+                int fieldMaxChars = (fieldRect.w - static_cast<int>(std::round(20.0f * uiScale))) / (8 * fontScale + fontScale);
+                drawInputText(renderer,
+                              fieldRect.x + static_cast<int>(std::round(10.0f * uiScale)),
+                              fieldRect.y + static_cast<int>(std::round(12.0f * uiScale)),
+                              fontScale, modalText, addToFrontendName, addToFrontendCursor, fieldMaxChars);
+
+                int oskTop = fieldRect.y + fieldRect.h + static_cast<int>(std::round(16.0f * uiScale));
+                SDL_Rect oskArea {modal.x + padding, oskTop, modal.w - padding * 2, modal.h - oskTop - padding * 2};
+                auto layout = buildOskLayout(osk.uppercase, osk.symbols, false);
+                clampOskSelection(osk, layout);
+                drawOsk(renderer, oskArea, fontScale, uiScale, modalText, layout, osk);
+
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)) - helpLineHeight,
+                         smallScale, modalText,
+                         "D-Pad: Move  L1/R1: Cursor  A: Select");
+                drawText(renderer,
+                         modal.x + padding,
+                         modal.y + modal.h - padding - static_cast<int>(std::round(10.0f * uiScale)),
+                         smallScale, modalText,
+                         "X: Backspace  Y: Clear  Start: Add  B: Cancel");
             } else if (mode == Mode::AppMenu) {
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, "Menu");
                 for (size_t i = 0; i < appMenuOptions.size(); ++i) {
@@ -4112,6 +4425,13 @@ int main(int argc, char** argv) {
                         label += ": " + (settings.steamLaunchOptions.empty() ? "(unset)" : settings.steamLaunchOptions);
                     } else if (settingsOptions[i] == "Steam Compatibility Tool") {
                         label += ": " + (settings.steamCompatibilityToolVersion.empty() ? "(unset)" : settings.steamCompatibilityToolVersion);
+                    } else if (settingsOptions[i] == "Frontend Launch Options") {
+                        label += ": " + (settings.frontendLaunchOptions.empty() ? "(unset)" : settings.frontendLaunchOptions);
+                    } else if (settingsOptions[i] == "Frontend Shortcut Folder") {
+                        std::string dirLabel = settings.frontendShortcutDir.empty()
+                            ? "(unset)"
+                            : settings.frontendShortcutDir.string();
+                        label += ": " + dirLabel;
                     } else if (settingsOptions[i] == "UI Scale") {
                         label += ": " + formatScale(settings.uiScale);
                     } else if (settingsOptions[i] == "Show Hidden") {
@@ -4140,6 +4460,10 @@ int main(int argc, char** argv) {
                     editTitle += "Steam Launch Options";
                 } else if (editField == SettingField::SteamCompatibilityTool) {
                     editTitle += "Steam Compatibility Tool";
+                } else if (editField == SettingField::FrontendLaunchOptions) {
+                    editTitle += "Frontend Launch Options";
+                } else if (editField == SettingField::FrontendShortcutDir) {
+                    editTitle += "Frontend Shortcut Folder";
                 }
                 drawText(renderer, modal.x + padding, modal.y + padding, fontScale, modalText, editTitle);
                 drawText(renderer, modal.x + padding, modal.y + padding + static_cast<int>(std::round(40.0f * uiScale)),

@@ -4112,7 +4112,7 @@ int main(int argc, char** argv) {
                 modalWidth = static_cast<int>(std::round(780.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(520.0f * uiScale));
             } else if (mode == Mode::ActionMenu) {
-                modalHeight = static_cast<int>(std::round(330.0f * uiScale));
+                modalHeight = static_cast<int>(std::round(360.0f * uiScale));
             } else if (mode == Mode::Favorites) {
                 modalWidth = static_cast<int>(std::round(820.0f * uiScale));
                 modalHeight = static_cast<int>(std::round(460.0f * uiScale));

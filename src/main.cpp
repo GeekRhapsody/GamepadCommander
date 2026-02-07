@@ -469,9 +469,15 @@ static bool addExeToFrontend(const fs::path& exePath,
         return false;
     }
     std::string lowerName = toLower(name);
+#ifdef _WIN32
+    if (lowerName.size() < 4 || lowerName.compare(lowerName.size() - 4, 4, ".bat") != 0) {
+        name += ".bat";
+    }
+#else
     if (lowerName.size() < 3 || lowerName.compare(lowerName.size() - 3, 3, ".sh") != 0) {
         name += ".sh";
     }
+#endif
 
     if (settings.frontendShortcutDir.empty()) {
         error = "Frontend shortcut folder not set";
@@ -500,13 +506,21 @@ static bool addExeToFrontend(const fs::path& exePath,
             error = "Failed to check existing shortcut";
             return false;
         }
-        if (!fs::is_regular_file(shortcutPath, ec) || ec) {
-            error = "Shortcut path exists and is not a file";
-            return false;
-        }
-        updated = true;
+    if (!fs::is_regular_file(shortcutPath, ec) || ec) {
+        error = "Shortcut path exists and is not a file";
+        return false;
+    }
+    updated = true;
     }
 
+    std::ofstream file(shortcutPath, std::ios::trunc);
+    if (!file.is_open()) {
+        error = "Failed to write shortcut";
+        return false;
+    }
+#ifdef _WIN32
+    file << absExe.string() << "\n";
+#else
     std::string options = trimWhitespace(settings.frontendLaunchOptions);
     std::string command;
     if (!options.empty()) {
@@ -514,28 +528,19 @@ static bool addExeToFrontend(const fs::path& exePath,
     }
     command += "umu-run ";
     command += quoteArg(absExe.string());
-
-    std::ofstream file(shortcutPath, std::ios::trunc);
-    if (!file.is_open()) {
-        error = "Failed to write shortcut";
-        return false;
-    }
     file << "#!/usr/bin/env bash\n";
     file << command << "\n";
+#endif
     file.close();
     if (!file) {
         error = "Failed to write shortcut";
         return false;
     }
 
-#ifndef _WIN32
     std::error_code absError;
     fs::path absShortcut = fs::absolute(shortcutPath, absError);
     const std::string shortcutLogPath = absError ? shortcutPath.string() : absShortcut.string();
     SDL_Log("Frontend shortcut path: %s", shortcutLogPath.c_str());
-#else
-    SDL_Log("Frontend shortcut path: %s", shortcutPath.string().c_str());
-#endif
 
 #ifndef _WIN32
     std::error_code permError;

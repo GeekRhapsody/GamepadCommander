@@ -556,6 +556,45 @@ static bool addExeToFrontend(const fs::path& exePath,
     return true;
 }
 
+static bool canSetAllowExecutingAsProgram(const Entry& entry, const Pane& pane) {
+#ifdef _WIN32
+    (void)entry;
+    (void)pane;
+    return false;
+#else
+    if (pane.source != PaneSource::Local) {
+        return false;
+    }
+    if (entry.isDir || entry.isParent) {
+        return false;
+    }
+    std::string ext = toLower(entry.path.extension().string());
+    return ext == ".appimage" || ext == ".sh";
+#endif
+}
+
+static bool setAllowExecutingAsProgram(const Entry& entry, const Pane& pane, std::string& error) {
+    if (!canSetAllowExecutingAsProgram(entry, pane)) {
+        error = "Unsupported file type";
+        return false;
+    }
+#ifdef _WIN32
+    error = "Not supported on Windows";
+    return false;
+#else
+    std::error_code ec;
+    fs::permissions(entry.path,
+                    fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                    fs::perm_options::add,
+                    ec);
+    if (ec) {
+        error = ec.message();
+        return false;
+    }
+    return true;
+#endif
+}
+
 static int textWidth(int scale, const std::string& text) {
     const int advance = 8 * scale + scale;
     return static_cast<int>(text.size()) * advance;
@@ -2495,6 +2534,17 @@ static void handleActionSelection(int menuIndex,
         SDL_StartTextInput();
         return;
     }
+    if (option == "Set Allow Executing as program") {
+        std::string error;
+        if (setAllowExecutingAsProgram(action.entry, panes[action.paneIndex], error)) {
+            setStatus(status, "Executable permission enabled");
+        } else {
+            setStatus(status, "Set execute permission failed: " + error);
+        }
+        loadEntries(panes[action.paneIndex], settings, &status);
+        mode = Mode::Browse;
+        return;
+    }
     if (option == "Extract") {
         std::string error;
         bool ok = false;
@@ -2643,6 +2693,9 @@ static std::vector<std::string> buildActionOptions(const Entry& entry, const Pan
     std::vector<std::string> options = {"Copy", "Move", "Delete", "Rename", "Create New Folder"};
     if (isZipArchive(entry, pane) || isRarArchive(entry, pane)) {
         options.insert(options.begin() + 2, "Extract");
+    }
+    if (canSetAllowExecutingAsProgram(entry, pane)) {
+        options.push_back("Set Allow Executing as program");
     }
     if (isWindowsExe(entry, pane)) {
         options.push_back("Add to Frontend");

@@ -3018,8 +3018,10 @@ int main(int argc, char** argv) {
         };
         auto commitAddToSteam = [&]() {
             std::string error;
-            if (addExeToSteam(action.entry.path, addToSteamName, settings.steamLaunchOptions,
-                              settings.steamCompatibilityToolVersion, error)) {
+            const bool isExe = isWindowsExe(action.entry, panes[action.paneIndex]);
+            const std::string launchOptions = isExe ? settings.steamLaunchOptions : "";
+            const std::string compatibilityTool = isExe ? settings.steamCompatibilityToolVersion : "";
+            if (addExeToSteam(action.entry.path, addToSteamName, launchOptions, compatibilityTool, error)) {
                 if (!error.empty()) {
                     setStatus(status, "Added to Steam, but: " + error);
                 } else {

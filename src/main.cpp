@@ -499,6 +499,7 @@ static bool addExeToFrontend(const fs::path& exePath,
     }
 
     fs::path absExe = fs::absolute(exePath);
+    fs::path exeDir = absExe.parent_path();
     shortcutPath = targetDir / name;
 
     if (fs::exists(shortcutPath, ec)) {
@@ -519,7 +520,8 @@ static bool addExeToFrontend(const fs::path& exePath,
         return false;
     }
 #ifdef _WIN32
-    file << absExe.string() << "\n";
+    file << "cd /d " << quoteArg(exeDir.string()) << "\n";
+    file << quoteArg(absExe.string()) << "\n";
 #else
     std::string options = trimWhitespace(settings.frontendLaunchOptions);
     std::string command;
@@ -529,6 +531,7 @@ static bool addExeToFrontend(const fs::path& exePath,
     command += "umu-run ";
     command += quoteArg(absExe.string());
     file << "#!/usr/bin/env bash\n";
+    file << "cd -- " << quoteArg(exeDir.string()) << "\n";
     file << command << "\n";
 #endif
     file.close();

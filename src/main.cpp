@@ -17,6 +17,16 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <objbase.h>
+#include <shobjidl.h>
+#include <shlguid.h>
+#endif
+
 #ifdef USE_CURL
 #include <curl/curl.h>
 #endif
@@ -372,6 +382,89 @@ static std::string quoteArg(const std::string& text) {
 #endif
 }
 
+#ifdef _WIN32
+static std::string formatHResult(HRESULT result) {
+    std::ostringstream out;
+    out << "0x" << std::uppercase << std::hex << static_cast<unsigned long>(result);
+    return out.str();
+}
+
+static std::wstring utf8ToWide(const std::string& text) {
+    if (text.empty()) {
+        return L"";
+    }
+    int wideLength = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (wideLength <= 0) {
+        return std::wstring(text.begin(), text.end());
+    }
+    std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), wideLength);
+    wide.resize(static_cast<size_t>(wideLength - 1));
+    return wide;
+}
+
+static bool createWindowsShortcut(const fs::path& targetPath,
+                                  const fs::path& workingDir,
+                                  const std::string& arguments,
+                                  const fs::path& linkPath,
+                                  std::string& error) {
+    HRESULT initResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool shouldUninitialize = SUCCEEDED(initResult);
+    if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE) {
+        error = "Failed to initialize Windows shortcut support (" + formatHResult(initResult) + ")";
+        return false;
+    }
+
+    IShellLinkW* shellLink = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_ShellLink,
+                                      nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_IShellLinkW,
+                                      reinterpret_cast<void**>(&shellLink));
+    if (FAILED(result)) {
+        if (shouldUninitialize) {
+            CoUninitialize();
+        }
+        error = "Failed to create Windows shortcut object (" + formatHResult(result) + ")";
+        return false;
+    }
+
+    result = shellLink->SetPath(targetPath.wstring().c_str());
+    if (SUCCEEDED(result)) {
+        result = shellLink->SetWorkingDirectory(workingDir.wstring().c_str());
+    }
+    if (SUCCEEDED(result) && !arguments.empty()) {
+        std::wstring wideArguments = utf8ToWide(arguments);
+        result = shellLink->SetArguments(wideArguments.c_str());
+    }
+    if (SUCCEEDED(result)) {
+        result = shellLink->SetIconLocation(targetPath.wstring().c_str(), 0);
+    }
+
+    IPersistFile* persistFile = nullptr;
+    if (SUCCEEDED(result)) {
+        result = shellLink->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&persistFile));
+    }
+    if (SUCCEEDED(result)) {
+        result = persistFile->Save(linkPath.wstring().c_str(), TRUE);
+    }
+
+    if (persistFile) {
+        persistFile->Release();
+    }
+    shellLink->Release();
+    if (shouldUninitialize) {
+        CoUninitialize();
+    }
+
+    if (FAILED(result)) {
+        error = "Failed to write Windows shortcut (" + formatHResult(result) + ")";
+        return false;
+    }
+    return true;
+}
+#endif
+
 static FILE* openPipe(const std::string& command, const char* mode) {
 #ifdef _WIN32
     return _popen(command.c_str(), mode);
@@ -470,8 +563,10 @@ static bool addExeToFrontend(const fs::path& exePath,
     }
     std::string lowerName = toLower(name);
 #ifdef _WIN32
-    if (lowerName.size() < 4 || lowerName.compare(lowerName.size() - 4, 4, ".bat") != 0) {
-        name += ".bat";
+    if (lowerName.size() >= 4 && lowerName.compare(lowerName.size() - 4, 4, ".bat") == 0) {
+        name = name.substr(0, name.size() - 4) + ".lnk";
+    } else if (lowerName.size() < 4 || lowerName.compare(lowerName.size() - 4, 4, ".lnk") != 0) {
+        name += ".lnk";
     }
 #else
     if (lowerName.size() < 3 || lowerName.compare(lowerName.size() - 3, 3, ".sh") != 0) {
@@ -499,6 +594,7 @@ static bool addExeToFrontend(const fs::path& exePath,
     }
 
     fs::path absExe = fs::absolute(exePath);
+    fs::path startDir = absExe.parent_path();
     shortcutPath = targetDir / name;
 
     if (fs::exists(shortcutPath, ec)) {
@@ -513,14 +609,20 @@ static bool addExeToFrontend(const fs::path& exePath,
     updated = true;
     }
 
+#ifdef _WIN32
+    if (!createWindowsShortcut(absExe,
+                               startDir,
+                               trimWhitespace(settings.frontendLaunchOptions),
+                               shortcutPath,
+                               error)) {
+        return false;
+    }
+#else
     std::ofstream file(shortcutPath, std::ios::trunc);
     if (!file.is_open()) {
         error = "Failed to write shortcut";
         return false;
     }
-#ifdef _WIN32
-    file << absExe.string() << "\n";
-#else
     std::string options = trimWhitespace(settings.frontendLaunchOptions);
     std::string command;
     if (!options.empty()) {
@@ -530,12 +632,12 @@ static bool addExeToFrontend(const fs::path& exePath,
     command += quoteArg(absExe.string());
     file << "#!/usr/bin/env bash\n";
     file << command << "\n";
-#endif
     file.close();
     if (!file) {
         error = "Failed to write shortcut";
         return false;
     }
+#endif
 
     std::error_code absError;
     fs::path absShortcut = fs::absolute(shortcutPath, absError);

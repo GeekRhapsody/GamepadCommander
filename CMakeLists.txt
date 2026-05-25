@@ -20,6 +20,7 @@ if (WIN32)
         @ONLY
     )
     target_sources(GamepadCommander PRIVATE "${WINDOWS_ICON_RC}")
+    target_link_libraries(GamepadCommander PRIVATE ole32 uuid)
 endif()
 
 if (TARGET SDL2::SDL2)

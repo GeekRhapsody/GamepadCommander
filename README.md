@@ -17,7 +17,7 @@ Gamepad-first, two-pane file manager inspired by Total Commander. Built for devi
 - Open files
 - Extract compressed files
 - FTP Client
-- Adding Apps/Games to Frontends (by creating .sh/.bat shortcuts)
+- Adding Apps/Games to Frontends (by creating .sh/.lnk shortcuts)
 - Adding Apps/Games to Steam (Steam needs to be restarted for the game to show)
 
 ## Controls (Gamepad)

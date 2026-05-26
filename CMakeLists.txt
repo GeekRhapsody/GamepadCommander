@@ -13,6 +13,8 @@ add_executable(GamepadCommander
 )
 
 if (WIN32)
+    set_property(TARGET GamepadCommander PROPERTY WIN32_EXECUTABLE TRUE)
+
     set(WINDOWS_ICON_RC "${CMAKE_BINARY_DIR}/GamepadCommander.rc")
     configure_file(
         "${CMAKE_SOURCE_DIR}/packaging/GamepadCommander.rc.in"

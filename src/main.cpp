@@ -186,6 +186,7 @@ struct Pane {
     fs::path lastLocalCwd;
     std::string ftpPath;
     PaneSource source = PaneSource::Local;
+    bool showingDrives = false;
     std::vector<Entry> entries;
     int selected = 0;
     int scroll = 0;
@@ -2323,9 +2324,69 @@ static bool parseFtpListLine(const std::string& line, Entry& entry) {
     return !entry.name.empty();
 }
 
+#ifdef _WIN32
+static bool isDriveRootPath(const fs::path& path) {
+    std::error_code ec;
+    fs::path absolutePath = fs::absolute(path, ec);
+    if (ec) {
+        absolutePath = path;
+    }
+    return absolutePath.has_root_name() &&
+           absolutePath.has_root_directory() &&
+           absolutePath == absolutePath.root_path();
+}
+
+static std::string driveTypeLabel(UINT driveType) {
+    switch (driveType) {
+    case DRIVE_REMOVABLE:
+        return "Removable Drive";
+    case DRIVE_FIXED:
+        return "Local Disk";
+    case DRIVE_REMOTE:
+        return "Network Drive";
+    case DRIVE_CDROM:
+        return "Optical Drive";
+    case DRIVE_RAMDISK:
+        return "RAM Disk";
+    default:
+        return "Drive";
+    }
+}
+#endif
+
 static void loadLocalEntries(Pane& pane, const Settings& settings) {
     pane.entries.clear();
     pane.lastLocalCwd = pane.cwd;
+#ifdef _WIN32
+    if (pane.showingDrives) {
+        DWORD drives = GetLogicalDrives();
+        for (char letter = 'A'; letter <= 'Z'; ++letter) {
+            if ((drives & (1u << (letter - 'A'))) == 0) {
+                continue;
+            }
+
+            std::string root;
+            root.push_back(letter);
+            root += ":\\";
+
+            char volumeName[MAX_PATH + 1] = {};
+            std::string label;
+            label.push_back(letter);
+            label += ":";
+            if (GetVolumeInformationA(root.c_str(), volumeName, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0) &&
+                volumeName[0] != '\0') {
+                label += " ";
+                label += volumeName;
+            } else {
+                label += " ";
+                label += driveTypeLabel(GetDriveTypeA(root.c_str()));
+            }
+
+            pane.entries.push_back({label, fs::path(root), true, false});
+        }
+        return;
+    }
+#endif
     bool hasParent = pane.cwd.has_parent_path();
     if (hasParent) {
         pane.entries.push_back({"..", pane.cwd.parent_path(), true, true});
@@ -2419,6 +2480,7 @@ static void connectToFtp(Pane& pane, const Settings& settings, StatusMessage& st
         return;
     }
     pane.source = PaneSource::Ftp;
+    pane.showingDrives = false;
     pane.ftpPath = "/";
     resetPanePosition(pane);
     loadEntries(pane, settings, &status);
@@ -2668,6 +2730,11 @@ static void handleActionSelection(int menuIndex,
 
     Pane& src = panes[action.paneIndex];
     Pane& dst = panes[1 - action.paneIndex];
+    if ((option == "Copy" || option == "Move") && dst.source == PaneSource::Local && dst.showingDrives) {
+        setStatus(status, "Select destination drive first");
+        mode = Mode::Browse;
+        return;
+    }
     std::string error;
     bool ok = false;
     if (option == "Copy") {
@@ -2910,6 +2977,14 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
         return;
     }
 
+#ifdef _WIN32
+    if (entry.isParent && isDriveRootPath(pane.cwd)) {
+        pane.showingDrives = true;
+        resetPanePosition(pane);
+        loadEntries(pane, settings, status);
+        return;
+    }
+#endif
     if (entry.isParent) {
         pane.cwd = entry.path;
         resetPanePosition(pane);
@@ -2918,6 +2993,7 @@ static void enterSelected(Pane& pane, const Settings& settings, StatusMessage* s
     }
     if (entry.isDir) {
         pane.cwd = entry.path;
+        pane.showingDrives = false;
         resetPanePosition(pane);
         loadEntries(pane, settings, status);
         return;
@@ -2939,6 +3015,17 @@ static void goUp(Pane& pane, const Settings& settings, StatusMessage* status) {
         loadEntries(pane, settings, status);
         return;
     }
+#ifdef _WIN32
+    if (pane.showingDrives) {
+        return;
+    }
+    if (isDriveRootPath(pane.cwd)) {
+        pane.showingDrives = true;
+        resetPanePosition(pane);
+        loadEntries(pane, settings, status);
+        return;
+    }
+#endif
     if (pane.cwd.has_parent_path()) {
         pane.cwd = pane.cwd.parent_path();
         resetPanePosition(pane);
@@ -3198,6 +3285,10 @@ int main(int argc, char** argv) {
                 setStatus(status, "Favorites are local-only");
                 return;
             }
+            if (panes[activePane].showingDrives) {
+                setStatus(status, "Select a drive first");
+                return;
+            }
             fs::path target = panes[activePane].cwd;
             if (favoriteExists(favorites, target)) {
                 setStatus(status, "Already in favorites list");
@@ -3220,6 +3311,7 @@ int main(int argc, char** argv) {
             }
             Pane& pane = panes[activePane];
             pane.source = PaneSource::Local;
+            pane.showingDrives = false;
             pane.cwd = target;
             pane.ftpPath = "/";
             resetPanePosition(pane);
@@ -3357,6 +3449,10 @@ int main(int argc, char** argv) {
                     } else if (key == SDLK_TAB) {
                         activePane = 1 - activePane;
                     } else if (key == SDLK_x && hasEntries) {
+                        if (panes[activePane].showingDrives) {
+                            setStatus(status, "Select a drive first");
+                            continue;
+                        }
                         Entry entry = panes[activePane].entries[static_cast<size_t>(panes[activePane].selected)];
                         if (!entry.isParent) {
                             action = {entry, activePane};
@@ -3610,6 +3706,10 @@ int main(int argc, char** argv) {
                     } else if (button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
                         activePane = 1;
                     } else if (button == SDL_CONTROLLER_BUTTON_X && hasEntries) {
+                        if (panes[activePane].showingDrives) {
+                            setStatus(status, "Select a drive first");
+                            continue;
+                        }
                         Entry entry = panes[activePane].entries[static_cast<size_t>(panes[activePane].selected)];
                         if (!entry.isParent) {
                             action = {entry, activePane};
@@ -4153,6 +4253,8 @@ int main(int argc, char** argv) {
             if (pane.source == PaneSource::Ftp) {
                 std::string hostLabel = settings.ftpHost.empty() ? "(unset)" : settings.ftpHost;
                 headerLabel = "FTP: " + hostLabel + pane.ftpPath;
+            } else if (pane.showingDrives) {
+                headerLabel = "This PC";
             } else {
                 headerLabel = pane.cwd.string();
             }
@@ -4187,7 +4289,7 @@ int main(int argc, char** argv) {
                 }
 
                 std::string label = entry.name;
-                if (entry.isDir && !entry.isParent) {
+                if (entry.isDir && !entry.isParent && !pane.showingDrives) {
                     label = "[DIR] " + label;
                 }
 
@@ -4228,7 +4330,7 @@ int main(int argc, char** argv) {
             }
             std::string countLabel = std::to_string(itemCount) + (itemCount == 1 ? " item" : " items");
             std::string freeLabel = "Free: N/A";
-            if (pane.source == PaneSource::Local) {
+            if (pane.source == PaneSource::Local && !pane.showingDrives) {
                 std::error_code ec;
                 fs::space_info spaceInfo = fs::space(pane.cwd, ec);
                 if (!ec) {
